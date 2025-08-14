@@ -1,6 +1,52 @@
 use std::hash::Hash;
 use std::sync::RwLock;
 use hashbrown::HashSet;
+use std::ops::Deref;
+use std::marker::PhantomData;
+
+///basically just a slice but compared and hashed by pointer
+#[derive(Debug,Clone,PartialEq,Copy,Eq,Hash)]
+pub struct ListId<'a,T>{
+	addr: usize,
+	len: usize,
+	_ph:PhantomData<&'a [T]>
+}
+
+impl<T> Deref for ListId<'_,T>{
+
+type Target = [T];
+fn deref(&self) -> &[T] { unsafe{
+	core::slice::from_raw_parts(self.addr as *const T,self.len)
+} }
+}
+
+impl<'a, T> From<ListId<'a,T>> for &'a [T]{
+fn from(l: ListId<'a, T>) -> Self { unsafe{
+	core::slice::from_raw_parts(l.addr as *const T,l.len)
+} }
+}
+
+impl<'a, T> From<&'a [T]> for  ListId<'a,T>{
+fn from(s: &'a [T]) -> Self { Self::new(s)}
+}
+
+impl<'a,T> ListId<'a,T>{
+	pub fn new(s:&'a [T])->Self{
+		Self{
+			addr:s.as_ptr().expose_provenance(),
+			len:s.len(),
+			_ph:PhantomData
+		}
+	}
+
+	pub fn dangle(self) -> ListId<'static,()>{
+		ListId{
+			addr:self.addr,
+			len:self.len,
+			_ph:PhantomData
+		}
+	}
+}
 
 #[derive(Debug,Default)]
 pub struct Registery<T: 'static>(RwLock<HashSet<&'static mut [T]>>);
@@ -16,7 +62,10 @@ fn drop(&mut self) {
 }
 
 impl<T:Eq+Hash+Clone> Registery<T>{
-	pub fn get_unique<'b>(&self,x:&'b [T]) -> &[T]{
+	pub fn get_unique<'b>(&self,x:&'b [T]) -> ListId<T>{
+		self.alloc(x).into()
+	}
+	pub fn alloc<'b>(&self,x:&'b [T]) -> &[T]{
 		if let Some(temp) = self.0.read().unwrap().get(x){
 			return unsafe{
 				core::slice::from_raw_parts(temp.as_ptr(),temp.len())
@@ -47,7 +96,7 @@ mod tests {
         let data = vec![1, 2, 3, 4, 5];
         
         let result = registry.get_unique(&data);
-        assert_eq!(result, &[1, 2, 3, 4, 5]);
+        assert_eq!(&*result, &[1, 2, 3, 4, 5]);
     }
 
     #[test]
@@ -59,8 +108,8 @@ mod tests {
         let result2 = registry.get_unique(&data);
         
         // Should return the same memory location for identical data
-        assert_eq!(result1.as_ptr(), result2.as_ptr());
         assert_eq!(result1, result2);
+        assert_eq!(&*result1, &*result2);
     }
 
     #[test]
@@ -73,8 +122,8 @@ mod tests {
         let result2 = registry.get_unique(&data2);
         
         assert_ne!(result1.as_ptr(), result2.as_ptr());
-        assert_eq!(result1, &[1, 2, 3]);
-        assert_eq!(result2, &[4, 5, 6]);
+        assert_eq!(&*result1, &[1, 2, 3]);
+        assert_eq!(&*result2, &[4, 5, 6]);
     }
 
     #[test]
@@ -82,7 +131,7 @@ mod tests {
         let registry = Registery::default();
         let empty: Vec<i32> = vec![];
         
-        let result = registry.get_unique(&empty);
+        let result = registry.alloc(&empty);
         assert_eq!(result, &[] as &[i32]);
     }
 
@@ -91,7 +140,7 @@ mod tests {
         let registry = Registery::default();
         let data = vec!["hello".to_string(), "world".to_string()];
         
-        let result = registry.get_unique(&data);
+        let result = registry.alloc(&data);
         assert_eq!(result, &["hello".to_string(), "world".to_string()]);
     }
 
@@ -107,7 +156,7 @@ mod tests {
             let registry_clone = Arc::clone(&registry);
             let data = test_data[i].clone();
             let handle = thread::spawn(move || {
-                let result = registry_clone.get_unique(&data);
+                let result = registry_clone.alloc(&data);
                 assert_eq!(result, &[i, i + 1, i + 2]);
                 result.as_ptr() as usize // Convert to address for comparison
             });
@@ -138,8 +187,8 @@ mod tests {
             let data = shared_data.clone();
             let handle = thread::spawn(move || {
                 let result = registry_clone.get_unique(&data);
-                assert_eq!(result, &[1, 2, 3]);
-                result.as_ptr() as usize // Convert to address for comparison
+                assert_eq!(&*result, &[1, 2, 3]);
+                result.dangle()
             });
             handles.push(handle);
         }
@@ -200,7 +249,6 @@ mod tests {
         // All should be equal and point to same memory
         for result in &results[1..] {
             assert_eq!(results[0], *result);
-            assert_eq!(results[0].as_ptr(), result.as_ptr());
         }
     }
 
