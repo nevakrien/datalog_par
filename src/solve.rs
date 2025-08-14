@@ -70,8 +70,3 @@ struct AtomState<'b, 'a>{
 }
 
 
-type Facts<'b, 'a> = HashMap<Atom<'a>,Arc<RwLock<AtomState<'b, 'a>>>>;
-
-struct Solver<'b,'a>{
-	facts:RwLock<Facts<'b, 'a>>,
-}

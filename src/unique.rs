@@ -59,24 +59,14 @@ impl<'a,T> ListId<'a,T>{
 }
 
 #[derive(Debug)]
-pub struct Registery<'a,T: 'a>(RwLock<HashSet<&'a mut [T]>>);
-impl<T> Drop for Registery<'_, T>{
+pub struct Registery<T>(RwLock<HashSet<Box<[T]>>>);
 
-fn drop(&mut self) {
-	for x in self.0.get_mut().unwrap().drain(){
-		unsafe{
-			let _ = Box::from_raw(x);
-		}
-	}
-}
-}
-
-impl<T> Default for Registery<'_, T>{
+impl<T> Default for Registery<T>{
 
 fn default() -> Self { Self(RwLock::new(HashSet::new()))}
 }
 
-impl<T:Eq+Hash+Clone> Registery<'_, T>{
+impl<T:Eq+Hash+Clone> Registery<T>{
 	pub fn new()->Self{
 		Self::default()
 	}
@@ -84,7 +74,7 @@ impl<T:Eq+Hash+Clone> Registery<'_, T>{
 		self.alloc(x).into()
 	}
 
-	
+
 
 	pub fn alloc<'b>(&self,x:&'b [T]) -> &[T]{
 		if let Some(temp) = self.0.read().unwrap().get(x){
@@ -96,7 +86,7 @@ impl<T:Eq+Hash+Clone> Registery<'_, T>{
 		let mut binding = self.0.write().unwrap();
 
   		let temp  = binding.get_or_insert_with(x, |x| {
-			Box::leak(x.into())
+			x.into()
 		});
 
 
