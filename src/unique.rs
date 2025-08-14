@@ -42,7 +42,7 @@ impl<'a, T> RegisteryInner<'a, T> {
 
     unsafe fn alloc(&mut self,s:&[T])->&'a [T] where T:Clone{
     	let start = self.arena_cur.len();
-    	if self.arena_cur.capacity()-start <= s.len(){
+    	if self.arena_cur.capacity()-start < s.len(){
     		self.arena_cur.extend(s.iter().cloned());
     		unsafe{
     			return slice::from_raw_parts(self.arena_cur.as_ptr().add(start),s.len());
@@ -60,7 +60,7 @@ impl<'a, T> RegisteryInner<'a, T> {
     	if s.len() <= Self::get_small_size() {
     		self.arena_cur.extend(s.iter().cloned());
     		unsafe{
-    			return slice::from_raw_parts(self.arena_cur.as_ptr().add(start),s.len());
+    			return slice::from_raw_parts(self.arena_cur.as_ptr(),s.len());
     		}
     	}
 
@@ -83,13 +83,13 @@ impl<T> Registery<'_,T>{
 }
 
 impl<'a,T:Hash+Eq> Registery<'a,T>{
-	pub fn try_get<'b:'a>(&'b self,s:&[T])->Option<&'a [T]>{
+	pub fn try_get(&'a self,s:&[T])->Option<&'a [T]>{
 		self.0.read().unwrap().exists.get(s).map(|v| &**v)
 	}
 }
 
 impl<'a,T:Hash+Eq+Clone> Registery<'a,T>{
-	pub fn get<'b:'a>(&'b self,s:&[T])->&'a [T]{
+	pub fn get(&'a self,s:&[T])->&'a [T]{
 		//first try the fast path no relocking
 		if let Some(ans) = self.try_get(s) {
 			return ans;
@@ -98,7 +98,7 @@ impl<'a,T:Hash+Eq+Clone> Registery<'a,T>{
 		self.get_write(s)
 	}
 
-	pub fn get_write<'b:'a>(&'b self,s:&[T])->&'a [T]{
+	pub fn get_write(&'a self,s:&[T])->&'a [T]{
 		let mut p = self.0.write().unwrap();
 		if let Some(ans) = p.exists.get(s).map(|v| &**v){
 			return ans;
