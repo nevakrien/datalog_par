@@ -83,6 +83,9 @@ impl<T:Eq+Hash+Clone> Registery<'_, T>{
 	pub fn get_unique<'b>(&self,x:&'b [T]) -> ListId<T>{
 		self.alloc(x).into()
 	}
+
+	
+
 	pub fn alloc<'b>(&self,x:&'b [T]) -> &[T]{
 		if let Some(temp) = self.0.read().unwrap().get(x){
 			return unsafe{

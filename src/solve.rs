@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::RwLock;
+use hashbrown::HashMap;
 use crate::unique::{ListId,Registery};
 use crate::parser::{Term,Atom as RawAtom, Rule as RawRule};
 
@@ -6,8 +9,6 @@ pub struct Atom<'a> {
     pub predicate: ListId<'a, u8>,
     pub args: ListId<'a, Term>,
 }
-
-impl Copy for Atom<'_> {}
 
 impl<'a> Atom<'a>{
 	pub fn new(raw:&RawAtom,preds:&'a Registery<u8>,terms:&'a Registery<Term>)->Self{
@@ -20,15 +21,11 @@ impl<'a> Atom<'a>{
 	}
 }
 
-
 #[derive(Debug, Clone, PartialEq,Eq,Hash)]
 pub struct Rule<'a,'b> {
     pub head: Atom<'a>,
     pub body: ListId<'b, Atom<'a>>,
 }
-
-impl Copy for Rule<'_, '_> {}
-
 
 impl<'a,'b> Rule<'a,'b>{
 	pub fn new(raw:&RawRule,
@@ -63,4 +60,18 @@ fn test_store_rule() {
     let terms = Registery::default();
     let atoms = Registery::default();
     let _rule = Rule::new(&raw,&preds,&terms,&atoms);
+}
+
+type Cond<'b,'a> = ListId<'b, Atom<'a>>;
+
+struct AtomState<'b, 'a>{
+	ans:Option<bool>,
+	work:Vec<(Cond<'b,'a>,usize	/*where to check each rule*/)>,
+}
+
+
+type Facts<'b, 'a> = HashMap<Atom<'a>,Arc<RwLock<AtomState<'b, 'a>>>>;
+
+struct Solver<'b,'a>{
+	facts:RwLock<Facts<'b, 'a>>,
 }
