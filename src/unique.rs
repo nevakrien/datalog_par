@@ -1,3 +1,6 @@
+use std::marker::PhantomData;
+use std::cell::UnsafeCell;
+use std::sync::RwLockReadGuard;
 use std::slice;
 use std::hash::Hash;
 use std::sync::RwLock;
@@ -82,30 +85,32 @@ impl<'a, T> RegisteryInner<'a, T> {
 }
 
 
-pub struct RegisteryMem<'a, T>(RwLock<RegisteryInner<'a,T>>);
-impl<'a,T> RegisteryMem<'a,T>{
-	pub fn new()->Self{Self(RwLock::new(RegisteryInner::new()))}
-	pub fn make_reg(&'a mut self)-> Registery<'a,T>{
-		Registery(self)
+pub struct Registery<'a, T>(RwLock<RwLock<RegisteryInner<'a,T>>>);
+impl<'a,T> Registery<'a,T>{
+	pub fn new()->Self{Self(RwLock::new(RegisteryInner::new().into()))}
+	pub fn borrow_thread<'me>(&'me self)-> RegisteryRef<'me,'a,T>{
+		RegisteryRef(self.0.read().unwrap(),PhantomData)
 	}
 
 }
-pub struct Registery<'a, T>(&'a RegisteryMem<'a, T>);
 
-//make sure we are not dangeling
-impl<T> Drop for Registery<'_, T>{
-fn drop(&mut self) {
-	unsafe {self.0.0.write().unwrap().clear();}
-}
+impl<T> Drop for Registery<'_,T>{
+fn drop(&mut self) { 	
+	//make sure all borrows are properly dead
+	let _d = self.0.write().unwrap();
+ }
 }
 
-impl<'a,T:Hash+Eq> Registery<'a,T>{
+pub struct RegisteryRef<'me, 'a, T>(RwLockReadGuard<'me ,RwLock<RegisteryInner<'a,T>>>,PhantomData<&'a UnsafeCell<T>>);
+
+
+impl<'a,T:Hash+Eq> RegisteryRef<'_,'a,T>{
 	pub fn try_get(&self,s:&[T])->Option<&'a [T]>{
-		self.0.0.read().unwrap().exists.get(s).map(|v| &**v)
+		self.0.read().unwrap().exists.get(s).map(|v| &**v)
 	}
 }
 
-impl<'a,T:Hash+Eq+Clone> Registery<'a,T>{
+impl<'a,T:Hash+Eq+Clone> RegisteryRef<'_,'a,T>{
 	pub fn get(&self,s:&[T])->&'a [T]{
 		//first try the fast path no relocking
 		if let Some(ans) = self.try_get(s) {
@@ -116,7 +121,7 @@ impl<'a,T:Hash+Eq+Clone> Registery<'a,T>{
 	}
 
 	pub fn get_write(&self,s:&[T])->&'a [T]{
-		let mut p = self.0.0.write().unwrap();
+		let mut p = self.0.write().unwrap();
 		if let Some(ans) = p.exists.get(s).map(|v| &**v){
 			return ans;
 		}
@@ -172,8 +177,8 @@ mod tests {
 
     #[test]
     fn test_registery_basic_functionality() {
-        let mut mem =RegisteryMem::new();
-        let reg = mem.make_reg();
+        let reg =Registery::new();
+        let reg = reg.borrow_thread();
         
         // Test with simple integers
         let slice1 = vec![1, 2, 3, 4, 5];
@@ -193,38 +198,38 @@ mod tests {
         assert_ne!(result1, result3);
     }
 
-    // #[test]
-    // fn test_registery_different_sizes() {
-    //     let mut mem =RegisteryMem::new();
-    //     let reg = mem.make_reg();
+    #[test]
+    fn test_registery_different_sizes() {
+        let reg =Registery::new();
+        let reg = reg.borrow_thread();
         
-    //     // Test various sizes to trigger different allocation strategies
-    //     let sizes = vec![
-    //         1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192
-    //     ];
+        // Test various sizes to trigger different allocation strategies
+        let sizes = vec![
+            1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192
+        ];
         
-    //     let mut results = Vec::new();
+        let mut results = Vec::new();
         
-    //     for size in sizes {
-    //         let data: Vec<i32> = (0..size).collect();
-    //         let result = reg.get(&data);
-    //         assert_eq!(result.len(), size as usize);
-    //         assert_eq!(result, &data[..]);
-    //         results.push((size, result));
-    //     }
+        for size in sizes {
+            let data: Vec<i32> = (0..size).collect();
+            let result = reg.get(&data);
+            assert_eq!(result.len(), size as usize);
+            assert_eq!(result, &data[..]);
+            results.push((size, result));
+        }
         
-    //     // Verify same data returns same pointers
-    //     for (size, expected_result) in &results {
-    //         let data: Vec<i32> = (0..*size).collect();
-    //         let result = reg.get(&data);
-    //         assert_eq!(result.as_ptr(), expected_result.as_ptr());
-    //     }
-    // }
+        // Verify same data returns same pointers
+        for (size, expected_result) in &results {
+            let data: Vec<i32> = (0..*size).collect();
+            let result = reg.get(&data);
+            assert_eq!(result.as_ptr(), expected_result.as_ptr());
+        }
+    }
 
     #[test]
     fn test_registery_empty_slices() {
-        let mut mem =RegisteryMem::new();
-        let reg = mem.make_reg();
+        let reg =Registery::new();
+        let reg = reg.borrow_thread();
         
         let empty1: Vec<i32> = vec![];
         let empty2: Vec<i32> = vec![];
@@ -241,8 +246,9 @@ mod tests {
     fn test_registery_with_destructors() {
         thread::scope(|s| {
             let drop_counter = std::sync::Arc::new(AtomicUsize::new(0));
-            let mut mem =RegisteryMem::new();
-        	let reg = mem.make_reg();
+            
+            let reg =Registery::new();
+       		let reg = reg.borrow_thread();
             
             {
                 let data = vec![
@@ -269,58 +275,59 @@ mod tests {
         });
     }
 
-    // #[test]
-    // fn test_registery_multithreaded_stress() {
-    //     let mut mem =RegisteryMem::new();
-    //     let reg = mem.make_reg();
+    #[test]
+    fn test_registery_multithreaded_stress() {
+        let reg =Registery::new();
+       	let reg = &reg;
 
-    //     thread::scope(|s| {
+        thread::scope(|s| {
             
-    //         let reg = &reg;
+            let reg = &reg;
 
-    //         let num_threads = 8;
-    //         let iterations_per_thread = 100;
+            let num_threads = 8;
+            let iterations_per_thread = 100;
             
-    //         let handles: Vec<_> = (0..num_threads)
-    //             .map(|thread_id| {
-    //                 s.spawn( move || {
-    //                     let mut local_results = Vec::new();
+            let handles: Vec<_> = (0..num_threads)
+                .map(|thread_id| {
+                    s.spawn( move || {
+                        let reg = reg.borrow_thread();
+                        let mut local_results = Vec::new();
                         
-    //                     for i in 0..iterations_per_thread {
-    //                         // Create different patterns of data
-    //                         let data = match i % 5 {
-    //                             0 => vec![thread_id, i],                    // Small, unique
-    //                             1 => vec![thread_id; 10],                  // Medium, repeated value
-    //                             2 => (0..100).map(|x| x + thread_id).collect(), // Large, unique pattern
-    //                             3 => vec![42; 1000],                       // Very large, same across threads
-    //                             _ => vec![thread_id, i % 10],              // Small, some overlap
-    //                         };
+                        for i in 0..iterations_per_thread {
+                            // Create different patterns of data
+                            let data = match i % 5 {
+                                0 => vec![thread_id, i],                    // Small, unique
+                                1 => vec![thread_id; 10],                  // Medium, repeated value
+                                2 => (0..100).map(|x| x + thread_id).collect(), // Large, unique pattern
+                                3 => vec![42; 1000],                       // Very large, same across threads
+                                _ => vec![thread_id, i % 10],              // Small, some overlap
+                            };
                             
-    //                         let result = reg.get(&data);
-    //                         assert_eq!(result, &data[..]);
-    //                         local_results.push((data, result));
-    //                     }
+                            let result = reg.get(&data);
+                            assert_eq!(result, &data[..]);
+                            local_results.push((data, result));
+                        }
                         
-    //                     // Verify consistency within thread
-    //                     for (original_data, expected_result) in &local_results {
-    //                         let new_result = reg.get(original_data);
-    //                         assert_eq!(new_result.as_ptr(), expected_result.as_ptr());
-    //                     }
+                        // Verify consistency within thread
+                        for (original_data, expected_result) in &local_results {
+                            let new_result = reg.get(original_data);
+                            assert_eq!(new_result.as_ptr(), expected_result.as_ptr());
+                        }
                         
-    //                     local_results.len()
-    //                 })
-    //             })
-    //             .collect();
+                        local_results.len()
+                    })
+                })
+                .collect();
             
-    //         let total_operations: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
-    //         assert_eq!(total_operations, num_threads * iterations_per_thread);
-    //     });
-    // }
+            let total_operations: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
+            assert_eq!(total_operations, num_threads * iterations_per_thread);
+        });
+    }
 
     #[test]
     fn test_registery_try_get() {
-        let mut mem =RegisteryMem::new();
-        let reg = mem.make_reg();
+        let reg =Registery::new();
+       	let reg = reg.borrow_thread();
         
         let data = vec![1, 2, 3];
         
@@ -338,8 +345,8 @@ mod tests {
 
     #[test]
     fn test_registery_mixed_types_stress() {
-        let mut mem =RegisteryMem::new();
-        let reg = mem.make_reg();
+        let reg =Registery::new();
+       	let reg = &reg;
 
         thread::scope(|s| {
         	let reg = &reg;
@@ -348,6 +355,7 @@ mod tests {
             let handles: Vec<_> = (0..num_threads)
                 .map(|thread_id| {
                     s.spawn(move || {
+                        let reg = reg.borrow_thread();
                         let mut results = HashSet::new();
                         
                         // Create various string patterns
@@ -380,8 +388,8 @@ mod tests {
     #[test]
     fn test_registery_large_allocations() {
         thread::scope(|s| {
-            let mut mem =RegisteryMem::new();
-        	let reg = mem.make_reg();
+            let reg =Registery::new();
+       		let reg = reg.borrow_thread();
             
             // Test very large allocations that exceed normal arena sizes
             let large_data: Vec<i32> = (0..10000).collect();
