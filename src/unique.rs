@@ -1,434 +1,223 @@
-use std::sync::RwLockReadGuard;
-use std::slice;
 use std::hash::Hash;
 use std::sync::RwLock;
-use std::collections::HashSet;
-
-// ==== registery
-struct RegisteryInner<T: 'static> {
-	//we inline the arena implementation here
-	//this is mostly for not needing to mess with sync/send
-    arena_cur:Vec<T>,
-    arena_store:  Vec<Vec<T>>,
-    exists: HashSet<&'static [T]>,
-}
+use hashbrown::HashSet;
 
 
-impl<T: 'static> RegisteryInner<T> {
-	unsafe fn clear(&mut self){
-		self.exists.clear();
-		self.arena_cur.clear();
-		self.arena_store.clear();
-	}
+#[derive(Debug,Default)]
+pub struct Registery<T: 'static>(RwLock<HashSet<&'static mut [T]>>);
+impl<T> Drop for Registery<T>{
 
-    pub fn new() -> Self {
-        Self {
-            arena_cur:Vec::with_capacity(Self::get_base_size()),
-    		arena_store:Vec::new(),
-            exists: HashSet::new(),
-        }
-    }
-
-    const fn get_base_size() -> usize{
-    	let a = 4096/size_of::<T>();
-    	if a > 8 {
-    		a
-    	}else{
-    		8
-    	}
-    }
-
-    const fn get_small_size() -> usize{
-    	let a = 4096/size_of::<T>();
-    	if a > 4 {
-    		a
-    	}else{
-    		4
-    	}
-    }
-
-    unsafe fn alloc<'a>(&mut self,s:&[T])->&'a [T] where T:Clone{
-    	let b : Box<[T]> = s.into();
-    	return Box::leak(b);
-
-    	let start = self.arena_cur.len();
-    	if self.arena_cur.capacity()-start < s.len(){
-    		self.arena_cur.extend(s.iter().cloned());
-    		unsafe{
-    			return slice::from_raw_parts(self.arena_cur.as_ptr().add(start),s.len());
-    		}
-    	}
-
-    	//store the too full current in
-    	{
-    		// let mut new_cur = Vec::with_capacity(Self::get_base_size());
-    		let mut new_cur = Vec::with_capacity(Self::get_base_size()+s.len());
-    		std::mem::swap(&mut self.arena_cur,&mut new_cur);
-    		self.arena_store.push(new_cur);
-    	}
-
-    	self.arena_cur.extend(s.iter().cloned());
+fn drop(&mut self) {
+	for x in self.0.get_mut().unwrap().drain(){
 		unsafe{
-			return slice::from_raw_parts(self.arena_cur.as_ptr(),s.len());
+			let _ = Box::from_raw(x);
+		}
+	}
+}
+}
+
+impl<T:Eq+Hash+Clone> Registery<T>{
+	pub fn get_unique<'b>(&self,x:&'b [T]) -> &[T]{
+		if let Some(temp) = self.0.read().unwrap().get(x){
+			return unsafe{
+				core::slice::from_raw_parts(temp.as_ptr(),temp.len())
+			}
 		}
 
-    	//big enough to exist with another allocation
-    	// if s.len() <= Self::get_small_size() {
-    	// 	self.arena_cur.extend(s.iter().cloned());
-    	// 	unsafe{
-    	// 		return slice::from_raw_parts(self.arena_cur.as_ptr(),s.len());
-    	// 	}
-    	// }
+		let mut binding = self.0.write().unwrap();
 
-    	// //too big to do anything meaningful with just make ita seprate allocation
-    	// let single_use : Vec<T> = s.into();
-    	// let ans = unsafe{
-    	// 	slice::from_raw_parts(single_use.as_ptr(),s.len())
-    	// };
-    	// self.arena_store.push(single_use);
-    	// ans
-
-    }
-}
+  		let temp  = binding.get_or_insert_with(x, |x| {
+			Box::leak(x.into())
+		});
 
 
-pub struct Registery<T: 'static>(RwLock<RwLock<RegisteryInner<T>>>);
-impl<T: 'static> Registery<T>{
-	pub fn new()->Self{Self(RwLock::new(RegisteryInner::new().into()))}
-	pub fn borrow_thread<'me>(&'me self)-> RegisteryRef<'me,T>{
-		RegisteryRef(self.0.read().unwrap())
-	}
-
-}
-
-
-pub struct RegisteryRef<'me, T: 'static>(RwLockReadGuard<'me ,RwLock<RegisteryInner<T>>>);
-
-
-impl<'a,T:Hash+Eq> RegisteryRef<'_,T>{
-	pub fn try_get(&self,s:&[T])->Option<&[T]>{
-		self.0.read().unwrap().exists.get(s).map(|v| &**v)
-	}
-}
-
-impl<'a,T:Hash+Eq+Clone + 'static> RegisteryRef<'a,T>{
-	pub fn get(&self,s:&[T])->&[T]{
-		//first try the fast path no relocking
-		if let Some(ans) = self.try_get(s) {
-			return ans;
+		unsafe{
+			core::slice::from_raw_parts(temp.as_ptr(),temp.len())
 		}
-
-		self.get_write(s)
-	}
-
-	pub fn get_write(&self,s:&[T])->&[T]{
-		let mut p = self.0.write().unwrap();
-		if let Some(ans) = p.exists.get(s).map(|v| &**v){
-			return ans;
-		}
-
-		let ans = unsafe{p.alloc(s)};
-		p.exists.insert(ans);
-		ans
 	}
 }
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{atomic::{AtomicUsize, Ordering}};
+    use std::sync::Arc;
     use std::thread;
-    use std::collections::HashSet;
-    
 
-    // Test with a type that has a destructor to ensure proper memory management
-    #[derive(Debug, Clone)]
-    struct DropTracker {
-        id: usize,
-        counter: std::sync::Arc<AtomicUsize>,
-    }
-
-    impl DropTracker {
-        fn new(id: usize, counter: std::sync::Arc<AtomicUsize>) -> Self {
-            counter.fetch_add(1, Ordering::SeqCst);
-            Self { id, counter }
-        }
-    }
-
-    impl PartialEq for DropTracker {
-        fn eq(&self, other: &Self) -> bool {
-            self.id == other.id
-        }
-    }
-
-    impl Eq for DropTracker {}
-
-    impl std::hash::Hash for DropTracker {
-        fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-            self.id.hash(state);
-        }
-    }
-
-    impl Drop for DropTracker {
-        fn drop(&mut self) {
-            self.counter.fetch_sub(1, Ordering::SeqCst);
-        }
+    #[test]
+    fn test_get_single_slice() {
+        let registry = Registery::default();
+        let data = vec![1, 2, 3, 4, 5];
+        
+        let result = registry.get_unique(&data);
+        assert_eq!(result, &[1, 2, 3, 4, 5]);
     }
 
     #[test]
-    fn test_registery_basic_functionality() {
-        let reg =Registery::new();
-        let reg = reg.borrow_thread();
-        
-        // Test with simple integers
-        let slice1 = vec![1, 2, 3, 4, 5];
-        let slice2 = vec![1, 2, 3, 4, 5];
-        let slice3 = vec![6, 7, 8, 9, 10];
-        
-        let result1 = reg.get(&slice1);
-        let result2 = reg.get(&slice2);
-        let result3 = reg.get(&slice3);
-        
-        // Same content should return same pointer
-        assert_eq!(result1.as_ptr(), result2.as_ptr());
-        assert_eq!(result1, result2);
-        
-        // Different content should return different pointer
-        assert_ne!(result1.as_ptr(), result3.as_ptr());
-        assert_ne!(result1, result3);
-    }
-
-    #[test]
-    fn test_registery_different_sizes() {
-        let reg =Registery::new();
-        let reg = reg.borrow_thread();
-        
-        // Test various sizes to trigger different allocation strategies
-        let sizes = vec![
-            1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192
-        ];
-        
-        let mut results = Vec::new();
-        
-        for size in sizes {
-            let data: Vec<i32> = (0..size).collect();
-            let result = reg.get(&data);
-            assert_eq!(result.len(), size as usize);
-            assert_eq!(result, &data[..]);
-            results.push((size, result));
-        }
-        
-        // Verify same data returns same pointers
-        for (size, expected_result) in &results {
-            let data: Vec<i32> = (0..*size).collect();
-            println!("size {size}", );
-            let result = reg.get(&data);
-            assert_eq!(result.as_ptr(), expected_result.as_ptr());
-        }
-    }
-
-    #[test]
-    fn test_registery_empty_slices() {
-        let reg =Registery::new();
-        let reg = reg.borrow_thread();
-        
-        let empty1: Vec<i32> = vec![];
-        let empty2: Vec<i32> = vec![];
-        
-        let result1 = reg.get(&empty1);
-        let result2 = reg.get(&empty2);
-        
-        assert_eq!(result1.len(), 0);
-        assert_eq!(result2.len(), 0);
-        assert_eq!(result1.as_ptr(), result2.as_ptr());
-    }
-
-    #[test]
-    fn test_registery_with_destructors() {
-        thread::scope(|s| {
-            let drop_counter = std::sync::Arc::new(AtomicUsize::new(0));
-            
-            let reg =Registery::new();
-       		let reg = reg.borrow_thread();
-            
-            {
-                let data = vec![
-                    DropTracker::new(1, drop_counter.clone()),
-                    DropTracker::new(2, drop_counter.clone()),
-                    DropTracker::new(3, drop_counter.clone()),
-                ];
-                
-                // Should have 3 live objects
-                assert_eq!(drop_counter.load(Ordering::SeqCst), 3);
-                
-                let result1 = reg.get(&data);
-                let result2 = reg.get(&data);
-                
-                // Should still have original 3 + 3 cloned into registry = 6
-                assert_eq!(drop_counter.load(Ordering::SeqCst), 6);
-                assert_eq!(result1.as_ptr(), result2.as_ptr());
-                
-                // Original data goes out of scope, should drop 3
-            }
-            
-            // Should have 3 remaining (the ones stored in registry)
-            assert_eq!(drop_counter.load(Ordering::SeqCst), 3);
-        });
-    }
-
-    #[test]
-    fn test_registery_multithreaded_stress() {
-        let reg =Registery::new();
-       	let reg = &reg;
-
-        thread::scope(|s| {
-            
-            let reg = &reg;
-
-            let num_threads = 8;
-            let iterations_per_thread = 100;
-            
-            let handles: Vec<_> = (0..num_threads)
-                .map(|thread_id| {
-                    s.spawn( move || {
-                        let reg = reg.borrow_thread();
-                        let mut local_results = Vec::new();
-                        
-                        for i in 0..iterations_per_thread {
-                            // Create different patterns of data
-                            let data = match i % 5 {
-                                0 => vec![thread_id, i],                    // Small, unique
-                                1 => vec![thread_id; 10],                  // Medium, repeated value
-                                2 => (0..100).map(|x| x + thread_id).collect(), // Large, unique pattern
-                                3 => vec![42; 1000],                       // Very large, same across threads
-                                _ => vec![thread_id, i % 10],              // Small, some overlap
-                            };
-                            
-                            let result = reg.get(&data);
-                            assert_eq!(result, &data[..]);
-                            local_results.push((data, result));
-                        }
-                        
-                        // Verify consistency within thread
-                        for (original_data, expected_result) in &local_results {
-                            let new_result = reg.get(original_data);
-                            assert_eq!(new_result.as_ptr(), expected_result.as_ptr());
-                        }
-                        
-                        local_results.len()
-                    })
-                })
-                .collect();
-            
-            let total_operations: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
-            assert_eq!(total_operations, num_threads * iterations_per_thread);
-        });
-    }
-
-    #[test]
-    fn test_registery_try_get() {
-        let reg =Registery::new();
-       	let reg = reg.borrow_thread();
-        
+    fn test_get_same_slice_returns_same_reference() {
+        let registry = Registery::default();
         let data = vec![1, 2, 3];
         
-        // Should return None before insertion
-        assert!(reg.try_get(&data).is_none());
+        let result1 = registry.get_unique(&data);
+        let result2 = registry.get_unique(&data);
         
-        // Insert the data
-        let result = reg.get(&data);
-        
-        // Now try_get should return Some
-        let try_result = reg.try_get(&data).unwrap();
-        assert_eq!(try_result.as_ptr(), result.as_ptr());
-        assert_eq!(try_result, &data[..]);
+        // Should return the same memory location for identical data
+        assert_eq!(result1.as_ptr(), result2.as_ptr());
+        assert_eq!(result1, result2);
     }
 
     #[test]
-    fn test_registery_mixed_types_stress() {
-        let reg =Registery::new();
-       	let reg = &reg;
-
-        thread::scope(|s| {
-        	let reg = &reg;
-            let num_threads = 4;
-            
-            let handles: Vec<_> = (0..num_threads)
-                .map(|thread_id| {
-                    s.spawn(move || {
-                        let reg = reg.borrow_thread();
-                        let mut results = HashSet::new();
-                        
-                        // Create various string patterns
-                        for i in 0..50 {
-                            let patterns = [
-                                format!("thread_{}_item_{}", thread_id, i),
-                                format!("common_pattern_{}", i % 10),
-                                "shared_string".to_string(),
-                                format!("{}", i),
-                            ];
-                            
-                            for pattern in &patterns {
-                                let chars: Vec<char> = pattern.chars().collect();
-                                let result = reg.get(&chars);
-                                assert_eq!(result, &chars[..]);
-                                results.insert(result.as_ptr() as usize);
-                            }
-                        }
-                        
-                        results.len()
-                    })
-                })
-                .collect();
-            
-            let unique_pointers: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
-            println!("Total unique pointers across all threads: {}", unique_pointers);
-        });
+    fn test_get_different_slices() {
+        let registry = Registery::default();
+        let data1 = vec![1, 2, 3];
+        let data2 = vec![4, 5, 6];
+        
+        let result1 = registry.get_unique(&data1);
+        let result2 = registry.get_unique(&data2);
+        
+        assert_ne!(result1.as_ptr(), result2.as_ptr());
+        assert_eq!(result1, &[1, 2, 3]);
+        assert_eq!(result2, &[4, 5, 6]);
     }
 
     #[test]
-    fn test_registery_large_allocations() {
-        thread::scope(|s| {
-            let reg =Registery::new();
-       		let reg = reg.borrow_thread();
-            
-            // Test very large allocations that exceed normal arena sizes
-            let large_data: Vec<i32> = (0..10000).collect();
-            let huge_data: Vec<i32> = (0..100000).collect();
-            
-            let result1 = reg.get(&large_data);
-            let result2 = reg.get(&large_data);
-            let result3 = reg.get(&huge_data);
-            let result4 = reg.get(&huge_data);
-            
-            assert_eq!(result1.as_ptr(), result2.as_ptr());
-            assert_eq!(result3.as_ptr(), result4.as_ptr());
-            assert_ne!(result1.as_ptr(), result3.as_ptr());
-            
-            assert_eq!(result1, &large_data[..]);
-            assert_eq!(result3, &huge_data[..]);
-        });
+    fn test_get_empty_slice() {
+        let registry = Registery::default();
+        let empty: Vec<i32> = vec![];
+        
+        let result = registry.get_unique(&empty);
+        assert_eq!(result, &[] as &[i32]);
     }
 
-    // Helper for generating random data
-    mod fastrand {
-        use std::cell::Cell;
+    #[test]
+    fn test_get_with_strings() {
+        let registry = Registery::default();
+        let data = vec!["hello".to_string(), "world".to_string()];
         
-        thread_local! {
-            static RNG: Cell<u64> = Cell::new(1);
+        let result = registry.get_unique(&data);
+        assert_eq!(result, &["hello".to_string(), "world".to_string()]);
+    }
+
+    #[test]
+    fn test_concurrent_access() {
+        let registry = Arc::new(Registery::default());
+        let mut handles = vec![];
+
+        // Create different data sets outside the threads
+        let test_data: Vec<Vec<_>> = (0..10).map(|i| vec![i, i + 1, i + 2]).collect();
+
+        for i in 0..10 {
+            let registry_clone = Arc::clone(&registry);
+            let data = test_data[i].clone();
+            let handle = thread::spawn(move || {
+                let result = registry_clone.get_unique(&data);
+                assert_eq!(result, &[i, i + 1, i + 2]);
+                result.as_ptr() as usize // Convert to address for comparison
+            });
+            handles.push(handle);
         }
+
+        let addrs: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
         
-        pub fn u64(range_start: u64, range_end: u64) -> u64 {
-            RNG.with(|rng| {
-                let mut x = rng.get();
-                if x == 0 { x = 1; }
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                rng.set(x);
-                range_start + (x % (range_end - range_start))
-            })
+        // All different data should have different addresses
+        for i in 0..addrs.len() {
+            for j in i + 1..addrs.len() {
+                assert_ne!(addrs[i], addrs[j]);
+            }
         }
+    }
+
+    #[test]
+    fn test_concurrent_same_data() {
+        let registry = Arc::new(Registery::default());
+        let mut handles = vec![];
+
+        // Create the shared data outside the threads
+        let shared_data = vec![1, 2, 3];
+
+        // Multiple threads accessing the same data
+        for _ in 0..5 {
+            let registry_clone = Arc::clone(&registry);
+            let data = shared_data.clone();
+            let handle = thread::spawn(move || {
+                let result = registry_clone.get_unique(&data);
+                assert_eq!(result, &[1, 2, 3]);
+                result.as_ptr() as usize // Convert to address for comparison
+            });
+            handles.push(handle);
+        }
+
+        let addrs: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        
+        // All should point to the same memory location
+        for addr in &addrs[1..] {
+            assert_eq!(addrs[0], *addr);
+        }
+    }
+
+    #[test]
+    fn test_drop_cleanup() {
+        // This test ensures the Drop implementation doesn't panic
+        let registry = Registery::default();
+        let data1 = vec![1, 2, 3];
+        let data2 = vec![4, 5, 6];
+        
+        let _result1 = registry.get_unique(&data1);
+        let _result2 = registry.get_unique(&data2);
+        
+        // Drop should clean up without panicking
+        drop(registry);
+    }
+
+    #[test]
+    fn test_custom_struct() {
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        #[derive(Default)]
+		struct TestStruct {
+            id: u32,
+            name: String,
+        }
+
+        let registry = Registery::default();
+        let data = vec![
+            TestStruct { id: 1, name: "Alice".to_string() },
+            TestStruct { id: 2, name: "Bob".to_string() },
+        ];
+        
+        let result = registry.get_unique(&data);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].id, 1);
+        assert_eq!(result[0].name, "Alice");
+    }
+
+    #[test]
+    fn test_repeated_identical_calls() {
+        let registry = Registery::default();
+        let data = vec![42, 24, 12];
+        
+        // Call get multiple times with the same data
+        let results: Vec<_> = (0..100)
+            .map(|_| registry.get_unique(&data))
+            .collect();
+        
+        // All should be equal and point to same memory
+        for result in &results[1..] {
+            assert_eq!(results[0], *result);
+            assert_eq!(results[0].as_ptr(), result.as_ptr());
+        }
+    }
+
+    // Test to verify memory safety with lifetimes
+    #[test]
+    fn test_lifetime_safety() {
+        let registry = Registery::default();
+        let addr = {
+            let temp_data = vec![1, 2, 3, 4];
+            let result = registry.get_unique(&temp_data);
+            result.as_ptr() as usize
+        }; // temp_data goes out of scope here
+        
+        // The returned slice should still be valid because it's stored in the registry
+        let data2 = vec![1, 2, 3, 4];
+        let result2 = registry.get_unique(&data2);
+        assert_eq!(addr, result2.as_ptr() as usize);
     }
 }
