@@ -5,12 +5,22 @@ use std::ops::Deref;
 use std::marker::PhantomData;
 
 ///basically just a slice but compared and hashed by pointer
-#[derive(Debug,Clone,PartialEq,Copy,Eq,Hash)]
+#[derive(Debug,PartialEq,Eq,Hash)]
 pub struct ListId<'a,T>{
 	addr: usize,
 	len: usize,
 	_ph:PhantomData<&'a [T]>
 }
+
+impl<T> Clone for ListId<'_,T>{
+
+fn clone(&self) -> Self { Self{
+	addr:self.addr,
+	len:self.len,
+	_ph:self._ph,
+} }
+}
+impl<T> Copy for ListId<'_,T> {}
 
 impl<T> Deref for ListId<'_,T>{
 
@@ -48,9 +58,9 @@ impl<'a,T> ListId<'a,T>{
 	}
 }
 
-#[derive(Debug,Default)]
-pub struct Registery<T: 'static>(RwLock<HashSet<&'static mut [T]>>);
-impl<T> Drop for Registery<T>{
+#[derive(Debug)]
+pub struct Registery<'a,T: 'a>(RwLock<HashSet<&'a mut [T]>>);
+impl<T> Drop for Registery<'_, T>{
 
 fn drop(&mut self) {
 	for x in self.0.get_mut().unwrap().drain(){
@@ -61,7 +71,15 @@ fn drop(&mut self) {
 }
 }
 
-impl<T:Eq+Hash+Clone> Registery<T>{
+impl<T> Default for Registery<'_, T>{
+
+fn default() -> Self { Self(RwLock::new(HashSet::new()))}
+}
+
+impl<T:Eq+Hash+Clone> Registery<'_, T>{
+	pub fn new()->Self{
+		Self::default()
+	}
 	pub fn get_unique<'b>(&self,x:&'b [T]) -> ListId<T>{
 		self.alloc(x).into()
 	}

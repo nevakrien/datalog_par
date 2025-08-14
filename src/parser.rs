@@ -1,32 +1,32 @@
 //made by claude4
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq,Eq,Hash)]
 pub enum Term {
     Variable(Box<str>),
     Constant(Box<str>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq,Eq,Hash)]
 pub struct Atom {
     pub predicate: Box<str>,
     pub args: Vec<Term>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq,Eq,Hash)]
 pub struct Rule {
     pub head: Atom,
     pub body: Vec<Atom>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq,Eq,Hash)]
 pub enum Statement {
     Fact(Atom),
     Rule(Rule),
     Query(Atom),
 }
 
-#[derive(Debug)]
+#[derive(Debug,PartialEq,Clone)]
 pub enum ParseError {
     UnexpectedToken(Box<str>),
     UnexpectedEof,
