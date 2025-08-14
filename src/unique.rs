@@ -2,7 +2,6 @@ use std::hash::Hash;
 use std::sync::RwLock;
 use hashbrown::HashSet;
 
-
 #[derive(Debug,Default)]
 pub struct Registery<T: 'static>(RwLock<HashSet<&'static mut [T]>>);
 impl<T> Drop for Registery<T>{
