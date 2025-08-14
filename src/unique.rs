@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-use std::cell::UnsafeCell;
 use std::sync::RwLockReadGuard;
 use std::slice;
 use std::hash::Hash;
@@ -7,16 +5,16 @@ use std::sync::RwLock;
 use std::collections::HashSet;
 
 // ==== registery
-struct RegisteryInner<'a, T> {
+struct RegisteryInner<T: 'static> {
 	//we inline the arena implementation here
 	//this is mostly for not needing to mess with sync/send
     arena_cur:Vec<T>,
     arena_store:  Vec<Vec<T>>,
-    exists: HashSet<&'a [T]>,
+    exists: HashSet<&'static [T]>,
 }
 
 
-impl<'a, T> RegisteryInner<'a, T> {
+impl<T: 'static> RegisteryInner<T> {
 	unsafe fn clear(&mut self){
 		self.exists.clear();
 		self.arena_cur.clear();
@@ -49,7 +47,10 @@ impl<'a, T> RegisteryInner<'a, T> {
     	}
     }
 
-    unsafe fn alloc(&mut self,s:&[T])->&'a [T] where T:Clone{
+    unsafe fn alloc<'a>(&mut self,s:&[T])->&'a [T] where T:Clone{
+    	let b : Box<[T]> = s.into();
+    	return Box::leak(b);
+
     	let start = self.arena_cur.len();
     	if self.arena_cur.capacity()-start < s.len(){
     		self.arena_cur.extend(s.iter().cloned());
@@ -60,58 +61,58 @@ impl<'a, T> RegisteryInner<'a, T> {
 
     	//store the too full current in
     	{
-    		let mut new_cur = Vec::with_capacity(Self::get_base_size());
+    		// let mut new_cur = Vec::with_capacity(Self::get_base_size());
+    		let mut new_cur = Vec::with_capacity(Self::get_base_size()+s.len());
     		std::mem::swap(&mut self.arena_cur,&mut new_cur);
     		self.arena_store.push(new_cur);
     	}
 
-    	//big enough to exist with another allocation
-    	if s.len() <= Self::get_small_size() {
-    		self.arena_cur.extend(s.iter().cloned());
-    		unsafe{
-    			return slice::from_raw_parts(self.arena_cur.as_ptr(),s.len());
-    		}
-    	}
+    	self.arena_cur.extend(s.iter().cloned());
+		unsafe{
+			return slice::from_raw_parts(self.arena_cur.as_ptr(),s.len());
+		}
 
-    	//too big to do anything meaningful with just make ita seprate allocation
-    	let single_use : Vec<T> = s.into();
-    	let ans = unsafe{
-    		slice::from_raw_parts(single_use.as_ptr(),s.len())
-    	};
-    	self.arena_store.push(single_use);
-    	ans
+    	//big enough to exist with another allocation
+    	// if s.len() <= Self::get_small_size() {
+    	// 	self.arena_cur.extend(s.iter().cloned());
+    	// 	unsafe{
+    	// 		return slice::from_raw_parts(self.arena_cur.as_ptr(),s.len());
+    	// 	}
+    	// }
+
+    	// //too big to do anything meaningful with just make ita seprate allocation
+    	// let single_use : Vec<T> = s.into();
+    	// let ans = unsafe{
+    	// 	slice::from_raw_parts(single_use.as_ptr(),s.len())
+    	// };
+    	// self.arena_store.push(single_use);
+    	// ans
 
     }
 }
 
 
-pub struct Registery<'a, T>(RwLock<RwLock<RegisteryInner<'a,T>>>);
-impl<'a,T> Registery<'a,T>{
+pub struct Registery<T: 'static>(RwLock<RwLock<RegisteryInner<T>>>);
+impl<T: 'static> Registery<T>{
 	pub fn new()->Self{Self(RwLock::new(RegisteryInner::new().into()))}
-	pub fn borrow_thread<'me>(&'me self)-> RegisteryRef<'me,'a,T>{
-		RegisteryRef(self.0.read().unwrap(),PhantomData)
+	pub fn borrow_thread<'me>(&'me self)-> RegisteryRef<'me,T>{
+		RegisteryRef(self.0.read().unwrap())
 	}
 
 }
 
-impl<T> Drop for Registery<'_,T>{
-fn drop(&mut self) { 	
-	//make sure all borrows are properly dead
-	let _d = self.0.write().unwrap();
- }
-}
 
-pub struct RegisteryRef<'me, 'a, T>(RwLockReadGuard<'me ,RwLock<RegisteryInner<'a,T>>>,PhantomData<&'a UnsafeCell<T>>);
+pub struct RegisteryRef<'me, T: 'static>(RwLockReadGuard<'me ,RwLock<RegisteryInner<T>>>);
 
 
-impl<'a,T:Hash+Eq> RegisteryRef<'_,'a,T>{
-	pub fn try_get(&self,s:&[T])->Option<&'a [T]>{
+impl<'a,T:Hash+Eq> RegisteryRef<'_,T>{
+	pub fn try_get(&self,s:&[T])->Option<&[T]>{
 		self.0.read().unwrap().exists.get(s).map(|v| &**v)
 	}
 }
 
-impl<'a,T:Hash+Eq+Clone> RegisteryRef<'_,'a,T>{
-	pub fn get(&self,s:&[T])->&'a [T]{
+impl<'a,T:Hash+Eq+Clone + 'static> RegisteryRef<'a,T>{
+	pub fn get(&self,s:&[T])->&[T]{
 		//first try the fast path no relocking
 		if let Some(ans) = self.try_get(s) {
 			return ans;
@@ -120,7 +121,7 @@ impl<'a,T:Hash+Eq+Clone> RegisteryRef<'_,'a,T>{
 		self.get_write(s)
 	}
 
-	pub fn get_write(&self,s:&[T])->&'a [T]{
+	pub fn get_write(&self,s:&[T])->&[T]{
 		let mut p = self.0.write().unwrap();
 		if let Some(ans) = p.exists.get(s).map(|v| &**v){
 			return ans;
@@ -136,10 +137,10 @@ impl<'a,T:Hash+Eq+Clone> RegisteryRef<'_,'a,T>{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, atomic::{AtomicUsize, Ordering}};
+    use std::sync::{atomic::{AtomicUsize, Ordering}};
     use std::thread;
     use std::collections::HashSet;
-    use std::time::Duration;
+    
 
     // Test with a type that has a destructor to ensure proper memory management
     #[derive(Debug, Clone)]
@@ -221,6 +222,7 @@ mod tests {
         // Verify same data returns same pointers
         for (size, expected_result) in &results {
             let data: Vec<i32> = (0..*size).collect();
+            println!("size {size}", );
             let result = reg.get(&data);
             assert_eq!(result.as_ptr(), expected_result.as_ptr());
         }
