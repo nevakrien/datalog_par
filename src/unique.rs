@@ -1,389 +1,389 @@
-use std::num::NonZero;
-use hashbrown::HashMap;
-use std::hash::Hash;
-use std::sync::RwLock;
-use hashbrown::HashSet;
-use std::ops::Deref;
-use std::marker::PhantomData;
+// use std::num::NonZero;
+// use hashbrown::HashMap;
+// use std::hash::Hash;
+// use std::sync::RwLock;
+// use hashbrown::HashSet;
+// use std::ops::Deref;
+// use std::marker::PhantomData;
 
-///basically just a slice but compared and hashed by pointer
-#[derive(Debug,PartialEq,Eq,Hash)]
-pub struct ListId<'a,T>{
-	addr: NonZero<usize>,
-	len: usize,
-	_ph:PhantomData<&'a [T]>
-}
+// ///basically just a slice but compared and hashed by pointer
+// #[derive(Debug,PartialEq,Eq,Hash)]
+// pub struct ListId<'a,T>{
+// 	addr: NonZero<usize>,
+// 	len: usize,
+// 	_ph:PhantomData<&'a [T]>
+// }
 
-impl<T> Clone for ListId<'_,T>{
+// impl<T> Clone for ListId<'_,T>{
 
-fn clone(&self) -> Self { Self{
-	addr:self.addr,
-	len:self.len,
-	_ph:self._ph,
-} }
-}
-impl<T> Copy for ListId<'_,T> {}
+// fn clone(&self) -> Self { Self{
+// 	addr:self.addr,
+// 	len:self.len,
+// 	_ph:self._ph,
+// } }
+// }
+// impl<T> Copy for ListId<'_,T> {}
 
-impl<T> Deref for ListId<'_,T>{
+// impl<T> Deref for ListId<'_,T>{
 
-type Target = [T];
-fn deref(&self) -> &[T] { unsafe{
-	core::slice::from_raw_parts(usize::from(self.addr) as *const T,self.len)
-} }
-}
+// type Target = [T];
+// fn deref(&self) -> &[T] { unsafe{
+// 	core::slice::from_raw_parts(usize::from(self.addr) as *const T,self.len)
+// } }
+// }
 
-impl<'a, T> From<ListId<'a,T>> for &'a [T]{
-fn from(l: ListId<'a, T>) -> Self { unsafe{
-	core::slice::from_raw_parts(usize::from(l.addr) as *const T,l.len)
-} }
-}
+// impl<'a, T> From<ListId<'a,T>> for &'a [T]{
+// fn from(l: ListId<'a, T>) -> Self { unsafe{
+// 	core::slice::from_raw_parts(usize::from(l.addr) as *const T,l.len)
+// } }
+// }
 
-impl<'a, T> From<&'a [T]> for  ListId<'a,T>{
-fn from(s: &'a [T]) -> Self { Self::new(s)}
-}
+// impl<'a, T> From<&'a [T]> for  ListId<'a,T>{
+// fn from(s: &'a [T]) -> Self { Self::new(s)}
+// }
 
-impl<'a,T> ListId<'a,T>{
-	pub fn new(s:&'a [T])->Self{
-		Self{
-			addr:NonZero::new(s.as_ptr().expose_provenance()).unwrap(),
-			len:s.len(),
-			_ph:PhantomData
-		}
-	}
+// impl<'a,T> ListId<'a,T>{
+// 	pub fn new(s:&'a [T])->Self{
+// 		Self{
+// 			addr:NonZero::new(s.as_ptr().expose_provenance()).unwrap(),
+// 			len:s.len(),
+// 			_ph:PhantomData
+// 		}
+// 	}
 
-	pub fn dangle(self) -> ListId<'static,()>{
-		ListId{
-			addr:self.addr,
-			len:self.len,
-			_ph:PhantomData
-		}
-	}
-}
+// 	pub fn dangle(self) -> ListId<'static,()>{
+// 		ListId{
+// 			addr:self.addr,
+// 			len:self.len,
+// 			_ph:PhantomData
+// 		}
+// 	}
+// }
 
-#[derive(Debug)]
-pub struct Registery<T>(RwLock<HashSet<Box<[T]>>>);
+// #[derive(Debug)]
+// pub struct Registery<T>(RwLock<HashSet<Box<[T]>>>);
 
-impl<T> Default for Registery<T>{
+// impl<T> Default for Registery<T>{
 
-fn default() -> Self { Self(RwLock::new(HashSet::new()))}
-}
+// fn default() -> Self { Self(RwLock::new(HashSet::new()))}
+// }
 
-impl<T:Eq+Hash+Clone> Registery<T>{
-	pub fn new()->Self{
-		Self::default()
-	}
-	pub fn get_unique<'b>(&self,x:&'b [T]) -> ListId<T>{
-		self.alloc(x).into()
-	}
+// impl<T:Eq+Hash+Clone> Registery<T>{
+// 	pub fn new()->Self{
+// 		Self::default()
+// 	}
+// 	pub fn get_unique<'b>(&self,x:&'b [T]) -> ListId<T>{
+// 		self.alloc(x).into()
+// 	}
 
-	pub fn alloc<'b>(&self,x:&'b [T]) -> &[T]{
-		if let Some(temp) = self.0.read().unwrap().get(x){
-			return unsafe{
-				&*(&**temp as *const [T])
-			}
-		}
+// 	pub fn alloc<'b>(&self,x:&'b [T]) -> &[T]{
+// 		if let Some(temp) = self.0.read().unwrap().get(x){
+// 			return unsafe{
+// 				&*(&**temp as *const [T])
+// 			}
+// 		}
 
-		let b = x.into();
-		let mut lock = self.0.write().unwrap();
-  		let temp  = lock.get_or_insert(b);
+// 		let b = x.into();
+// 		let mut lock = self.0.write().unwrap();
+//   		let temp  = lock.get_or_insert(b);
 
 
-		unsafe{
-			&*(&**temp as *const [T])
-		}
-	}
-}
+// 		unsafe{
+// 			&*(&**temp as *const [T])
+// 		}
+// 	}
+// }
 
-pub struct Store<K,V:?Sized>(RwLock<HashMap<K,Box<V>>>);
-impl<K,V> Default for Store<K,V>{
-fn default() -> Self { Self(RwLock::new(HashMap::new()))}
-}
+// pub struct Store<K,V:?Sized>(RwLock<HashMap<K,Box<V>>>);
+// impl<K,V> Default for Store<K,V>{
+// fn default() -> Self { Self(RwLock::new(HashMap::new()))}
+// }
 
-impl<K:Hash+Eq+Clone, V> Store<K, V>{
-	pub fn new() -> Self{
-		Self::default()
-	}
+// impl<K:Hash+Eq+Clone, V> Store<K, V>{
+// 	pub fn new() -> Self{
+// 		Self::default()
+// 	}
 
-	pub fn get_or_default<'b>(&self, k: &'b K) ->&V where V:Default{
-		self.get_or(k,V::default)
-	}
+// 	pub fn get_or_default<'b>(&self, k: &'b K) ->&V where V:Default{
+// 		self.get_or(k,V::default)
+// 	}
 
-    pub fn try_get<'b>(&self, k: &'b K) ->Option<&V>{
-        if let Some(b) = self.0.read().unwrap().get(k){
-            return Some(unsafe{
-                &*(&**b as *const V)
-            })
-        }
+//     pub fn try_get<'b>(&self, k: &'b K) ->Option<&V>{
+//         if let Some(b) = self.0.read().unwrap().get(k){
+//             return Some(unsafe{
+//                 &*(&**b as *const V)
+//             })
+//         }
 
-        None
-    }
+//         None
+//     }
 
-	//gets a value or inilizes with f.
-	//WARNING!!!: to avoid contention we might inilize the value more than once
-	//if this isnt desirble use get_or_once
-	pub fn get_or<'b>(&self, k: &'b K,f:impl FnOnce()->V) ->&V{
-    	if let Some(ans) = self.try_get(k){
-    		return ans
-    	}
+// 	//gets a value or inilizes with f.
+// 	//WARNING!!!: to avoid contention we might inilize the value more than once
+// 	//if this isnt desirble use get_or_once
+// 	pub fn get_or<'b>(&self, k: &'b K,f:impl FnOnce()->V) ->&V{
+//     	if let Some(ans) = self.try_get(k){
+//     		return ans
+//     	}
 		
-		let k = k.clone();
-		let b :Box<V>= Box::new(f());    	
-    	let mut lock = self.0.write().unwrap();
-    	let temp = lock.entry(k).or_insert(b);
-    	unsafe{
-			&*(&**temp as *const V)
-		}
-    }
+// 		let k = k.clone();
+// 		let b :Box<V>= Box::new(f());    	
+//     	let mut lock = self.0.write().unwrap();
+//     	let temp = lock.entry(k).or_insert(b);
+//     	unsafe{
+// 			&*(&**temp as *const V)
+// 		}
+//     }
 
-    pub fn get_or_once<'b>(&self, k: &'b K,f:impl FnOnce()->V) ->&V{
-    	if let Some(ans) = self.try_get(k){
-            return ans
-        }
+//     pub fn get_or_once<'b>(&self, k: &'b K,f:impl FnOnce()->V) ->&V{
+//     	if let Some(ans) = self.try_get(k){
+//             return ans
+//         }
 		
-    	let mut lock = self.0.write().unwrap();		
-		let k = k.clone();
-		let b :Box<V>= Box::new(f());    	
-    	let temp = lock.entry(k).or_insert(b);
-    	unsafe{
-			&*(&**temp as *const V)
-		}
-    }
-}
+//     	let mut lock = self.0.write().unwrap();		
+// 		let k = k.clone();
+// 		let b :Box<V>= Box::new(f());    	
+//     	let temp = lock.entry(k).or_insert(b);
+//     	unsafe{
+// 			&*(&**temp as *const V)
+// 		}
+//     }
+// }
 
 
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-    use std::thread;
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use std::sync::Arc;
+//     use std::thread;
 
-    #[test]
-    fn test_get_single_slice() {
-        let registry = Registery::default();
-        let data = vec![1, 2, 3, 4, 5];
+//     #[test]
+//     fn test_get_single_slice() {
+//         let registry = Registery::default();
+//         let data = vec![1, 2, 3, 4, 5];
         
-        let result = registry.get_unique(&data);
-        assert_eq!(&*result, &[1, 2, 3, 4, 5]);
-    }
+//         let result = registry.get_unique(&data);
+//         assert_eq!(&*result, &[1, 2, 3, 4, 5]);
+//     }
 
-    #[test]
-    fn test_get_same_slice_returns_same_reference() {
-        let registry = Registery::default();
-        let data = vec![1, 2, 3];
+//     #[test]
+//     fn test_get_same_slice_returns_same_reference() {
+//         let registry = Registery::default();
+//         let data = vec![1, 2, 3];
         
-        let result1 = registry.get_unique(&data);
-        let result2 = registry.get_unique(&data);
+//         let result1 = registry.get_unique(&data);
+//         let result2 = registry.get_unique(&data);
         
-        // Should return the same memory location for identical data
-        assert_eq!(result1, result2);
-        assert_eq!(&*result1, &*result2);
-    }
+//         // Should return the same memory location for identical data
+//         assert_eq!(result1, result2);
+//         assert_eq!(&*result1, &*result2);
+//     }
 
-    #[test]
-    fn test_get_different_slices() {
-        let registry = Registery::default();
-        let data1 = vec![1, 2, 3];
-        let data2 = vec![4, 5, 6];
+//     #[test]
+//     fn test_get_different_slices() {
+//         let registry = Registery::default();
+//         let data1 = vec![1, 2, 3];
+//         let data2 = vec![4, 5, 6];
         
-        let result1 = registry.get_unique(&data1);
-        let result2 = registry.get_unique(&data2);
+//         let result1 = registry.get_unique(&data1);
+//         let result2 = registry.get_unique(&data2);
         
-        assert_ne!(result1.as_ptr(), result2.as_ptr());
-        assert_eq!(&*result1, &[1, 2, 3]);
-        assert_eq!(&*result2, &[4, 5, 6]);
-    }
+//         assert_ne!(result1.as_ptr(), result2.as_ptr());
+//         assert_eq!(&*result1, &[1, 2, 3]);
+//         assert_eq!(&*result2, &[4, 5, 6]);
+//     }
 
-    #[test]
-    fn test_get_empty_slice() {
-        let registry = Registery::default();
-        let empty: Vec<i32> = vec![];
+//     #[test]
+//     fn test_get_empty_slice() {
+//         let registry = Registery::default();
+//         let empty: Vec<i32> = vec![];
         
-        let result = registry.alloc(&empty);
-        assert_eq!(result, &[] as &[i32]);
-    }
+//         let result = registry.alloc(&empty);
+//         assert_eq!(result, &[] as &[i32]);
+//     }
 
-    #[test]
-    fn test_get_with_strings() {
-        let registry = Registery::default();
-        let data = vec!["hello".to_string(), "world".to_string()];
+//     #[test]
+//     fn test_get_with_strings() {
+//         let registry = Registery::default();
+//         let data = vec!["hello".to_string(), "world".to_string()];
         
-        let result = registry.alloc(&data);
-        assert_eq!(result, &["hello".to_string(), "world".to_string()]);
-    }
+//         let result = registry.alloc(&data);
+//         assert_eq!(result, &["hello".to_string(), "world".to_string()]);
+//     }
 
-    #[test]
-    fn test_concurrent_access() {
-        let registry = Arc::new(Registery::default());
-        let mut handles = vec![];
+//     #[test]
+//     fn test_concurrent_access() {
+//         let registry = Arc::new(Registery::default());
+//         let mut handles = vec![];
 
-        // Create different data sets outside the threads
-        let test_data: Vec<Vec<_>> = (0..10).map(|i| vec![i, i + 1, i + 2]).collect();
+//         // Create different data sets outside the threads
+//         let test_data: Vec<Vec<_>> = (0..10).map(|i| vec![i, i + 1, i + 2]).collect();
 
-        for i in 0..10 {
-            let registry_clone = Arc::clone(&registry);
-            let data = test_data[i].clone();
-            let handle = thread::spawn(move || {
-                let result = registry_clone.alloc(&data);
-                assert_eq!(result, &[i, i + 1, i + 2]);
-                result.as_ptr() as usize // Convert to address for comparison
-            });
-            handles.push(handle);
-        }
+//         for i in 0..10 {
+//             let registry_clone = Arc::clone(&registry);
+//             let data = test_data[i].clone();
+//             let handle = thread::spawn(move || {
+//                 let result = registry_clone.alloc(&data);
+//                 assert_eq!(result, &[i, i + 1, i + 2]);
+//                 result.as_ptr() as usize // Convert to address for comparison
+//             });
+//             handles.push(handle);
+//         }
 
-        let addrs: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+//         let addrs: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
         
-        // All different data should have different addresses
-        for i in 0..addrs.len() {
-            for j in i + 1..addrs.len() {
-                assert_ne!(addrs[i], addrs[j]);
-            }
-        }
-    }
+//         // All different data should have different addresses
+//         for i in 0..addrs.len() {
+//             for j in i + 1..addrs.len() {
+//                 assert_ne!(addrs[i], addrs[j]);
+//             }
+//         }
+//     }
 
-    #[test]
-    fn test_concurrent_same_data() {
-        let registry = Arc::new(Registery::default());
-        let mut handles = vec![];
+//     #[test]
+//     fn test_concurrent_same_data() {
+//         let registry = Arc::new(Registery::default());
+//         let mut handles = vec![];
 
-        // Create the shared data outside the threads
-        let shared_data = vec![1, 2, 3];
+//         // Create the shared data outside the threads
+//         let shared_data = vec![1, 2, 3];
 
-        // Multiple threads accessing the same data
-        for _ in 0..5 {
-            let registry_clone = Arc::clone(&registry);
-            let data = shared_data.clone();
-            let handle = thread::spawn(move || {
-                let result = registry_clone.get_unique(&data);
-                assert_eq!(&*result, &[1, 2, 3]);
-                result.dangle()
-            });
-            handles.push(handle);
-        }
+//         // Multiple threads accessing the same data
+//         for _ in 0..5 {
+//             let registry_clone = Arc::clone(&registry);
+//             let data = shared_data.clone();
+//             let handle = thread::spawn(move || {
+//                 let result = registry_clone.get_unique(&data);
+//                 assert_eq!(&*result, &[1, 2, 3]);
+//                 result.dangle()
+//             });
+//             handles.push(handle);
+//         }
 
-        let addrs: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+//         let addrs: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
         
-        // All should point to the same memory location
-        for addr in &addrs[1..] {
-            assert_eq!(addrs[0], *addr);
-        }
-    }
+//         // All should point to the same memory location
+//         for addr in &addrs[1..] {
+//             assert_eq!(addrs[0], *addr);
+//         }
+//     }
 
-    #[test]
-    fn test_drop_cleanup() {
-        // This test ensures the Drop implementation doesn't panic
-        let registry = Registery::default();
-        let data1 = vec![1, 2, 3];
-        let data2 = vec![4, 5, 6];
+//     #[test]
+//     fn test_drop_cleanup() {
+//         // This test ensures the Drop implementation doesn't panic
+//         let registry = Registery::default();
+//         let data1 = vec![1, 2, 3];
+//         let data2 = vec![4, 5, 6];
         
-        let _result1 = registry.get_unique(&data1);
-        let _result2 = registry.get_unique(&data2);
+//         let _result1 = registry.get_unique(&data1);
+//         let _result2 = registry.get_unique(&data2);
         
-        // Drop should clean up without panicking
-        drop(registry);
-    }
+//         // Drop should clean up without panicking
+//         drop(registry);
+//     }
 
-    #[test]
-    fn test_custom_struct() {
-        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-        #[derive(Default)]
-		struct TestStruct {
-            id: u32,
-            name: String,
-        }
+//     #[test]
+//     fn test_custom_struct() {
+//         #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+//         #[derive(Default)]
+// 		struct TestStruct {
+//             id: u32,
+//             name: String,
+//         }
 
-        let registry = Registery::default();
-        let data = vec![
-            TestStruct { id: 1, name: "Alice".to_string() },
-            TestStruct { id: 2, name: "Bob".to_string() },
-        ];
+//         let registry = Registery::default();
+//         let data = vec![
+//             TestStruct { id: 1, name: "Alice".to_string() },
+//             TestStruct { id: 2, name: "Bob".to_string() },
+//         ];
         
-        let result = registry.get_unique(&data);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].id, 1);
-        assert_eq!(result[0].name, "Alice");
-    }
+//         let result = registry.get_unique(&data);
+//         assert_eq!(result.len(), 2);
+//         assert_eq!(result[0].id, 1);
+//         assert_eq!(result[0].name, "Alice");
+//     }
 
-    #[test]
-    fn test_repeated_identical_calls() {
-        let registry = Registery::default();
-        let data = vec![42, 24, 12];
+//     #[test]
+//     fn test_repeated_identical_calls() {
+//         let registry = Registery::default();
+//         let data = vec![42, 24, 12];
         
-        // Call get multiple times with the same data
-        let results: Vec<_> = (0..100)
-            .map(|_| registry.get_unique(&data))
-            .collect();
+//         // Call get multiple times with the same data
+//         let results: Vec<_> = (0..100)
+//             .map(|_| registry.get_unique(&data))
+//             .collect();
         
-        // All should be equal and point to same memory
-        for result in &results[1..] {
-            assert_eq!(results[0], *result);
-        }
-    }
+//         // All should be equal and point to same memory
+//         for result in &results[1..] {
+//             assert_eq!(results[0], *result);
+//         }
+//     }
 
-    // Test to verify memory safety with lifetimes
-    #[test]
-    fn test_lifetime_safety() {
-        let registry = Registery::default();
-        let addr = {
-            let temp_data = vec![1, 2, 3, 4];
-            let result = registry.get_unique(&temp_data);
-            result.as_ptr() as usize
-        }; // temp_data goes out of scope here
+//     // Test to verify memory safety with lifetimes
+//     #[test]
+//     fn test_lifetime_safety() {
+//         let registry = Registery::default();
+//         let addr = {
+//             let temp_data = vec![1, 2, 3, 4];
+//             let result = registry.get_unique(&temp_data);
+//             result.as_ptr() as usize
+//         }; // temp_data goes out of scope here
         
-        // The returned slice should still be valid because it's stored in the registry
-        let data2 = vec![1, 2, 3, 4];
-        let result2 = registry.get_unique(&data2);
-        assert_eq!(addr, result2.as_ptr() as usize);
-    }
-}
+//         // The returned slice should still be valid because it's stored in the registry
+//         let data2 = vec![1, 2, 3, 4];
+//         let result2 = registry.get_unique(&data2);
+//         assert_eq!(addr, result2.as_ptr() as usize);
+//     }
+// }
 
-#[cfg(test)]
-mod test_store {
-    use std::sync::Barrier;
-    use std::sync::atomic::AtomicUsize;
-    use std::thread;
-    use std::sync::atomic::Ordering;
-    use std::sync::Arc;
-    use super::*;
+// #[cfg(test)]
+// mod test_store {
+//     use std::sync::Barrier;
+//     use std::sync::atomic::AtomicUsize;
+//     use std::thread;
+//     use std::sync::atomic::Ordering;
+//     use std::sync::Arc;
+//     use super::*;
 
-    struct TestData {
-        counter: AtomicUsize,
-        #[allow(dead_code)]
-        data: Box<[u8; 3]>,
-    }
+//     struct TestData {
+//         counter: AtomicUsize,
+//         #[allow(dead_code)]
+//         data: Box<[u8; 3]>,
+//     }
 
-    impl Default for TestData {
-        fn default() -> Self { 
-            Self {
-                counter: 0.into(),
-                data: Box::new([0; 3])
-            } 
-        }
-    }
+//     impl Default for TestData {
+//         fn default() -> Self { 
+//             Self {
+//                 counter: 0.into(),
+//                 data: Box::new([0; 3])
+//             } 
+//         }
+//     }
 
-    #[test]
-    fn test_concurrent_double_insertion() {
-        let store = Arc::new(Store::<i32, TestData>::new());
-        let barrier = Arc::new(Barrier::new(16));
-        let key = 42;
+//     #[test]
+//     fn test_concurrent_double_insertion() {
+//         let store = Arc::new(Store::<i32, TestData>::new());
+//         let barrier = Arc::new(Barrier::new(16));
+//         let key = 42;
         
-        let handles: Vec<_> = (0..32)
-            .map(|_| {
-                let store = Arc::clone(&store);
-                let barrier = Arc::clone(&barrier);
-                thread::spawn(move || {
-                    barrier.wait();
-                    let data_ref = store.get_or_default(&key);
-                    data_ref.counter.fetch_add(1, Ordering::SeqCst)
-                })
-            })
-            .collect();
+//         let handles: Vec<_> = (0..32)
+//             .map(|_| {
+//                 let store = Arc::clone(&store);
+//                 let barrier = Arc::clone(&barrier);
+//                 thread::spawn(move || {
+//                     barrier.wait();
+//                     let data_ref = store.get_or_default(&key);
+//                     data_ref.counter.fetch_add(1, Ordering::SeqCst)
+//                 })
+//             })
+//             .collect();
 
-        for handle in handles {
-            handle.join().unwrap();
-        }
+//         for handle in handles {
+//             handle.join().unwrap();
+//         }
         
-        let final_ref = store.get_or_default(&key);
-        assert_eq!(final_ref.counter.load(Ordering::SeqCst), 32);
-    }
-}
+//         let final_ref = store.get_or_default(&key);
+//         assert_eq!(final_ref.counter.load(Ordering::SeqCst), 32);
+//     }
+// }

@@ -300,7 +300,10 @@ impl<'a> DatalogParser<'a> {
                 if let Some(tok) = self.current_token() {
                     if tok == "." {
                         self.advance();
-                        return Ok(Some(Statement::Rule(Rule { head: atom, body: Vec::new() })));
+                        return Ok(Some(Statement::Rule(Rule {
+                            head: atom,
+                            body: Vec::new(),
+                        })));
                     }
                 }
 
@@ -326,7 +329,6 @@ impl<'a> DatalogParser<'a> {
             None => Err(ParseError::UnexpectedEof),
         }
     }
-
 
     pub fn parse_all(&mut self) -> Result<Vec<Statement>, ParseError> {
         let mut statements = Vec::new();
@@ -395,12 +397,11 @@ mod tests {
         assert_eq!(v.len(), 1);
     }
 
-
     #[test]
     fn test_parse_fact() {
         let mut parser = DatalogParser::new("parent(tom, bob).");
         let statements = parser.parse_all().unwrap();
-        
+
         assert_eq!(statements.len(), 1);
         match &statements[0] {
             Statement::Fact(atom) => {
@@ -417,7 +418,7 @@ mod tests {
     fn test_parse_rule() {
         let mut parser = DatalogParser::new("grandparent(X, Z) :- parent(X, Y), parent(Y, Z).");
         let statements = parser.parse_all().unwrap();
-        
+
         assert_eq!(statements.len(), 1);
         match &statements[0] {
             Statement::Rule(rule) => {
@@ -435,7 +436,7 @@ mod tests {
     fn test_parse_query() {
         let mut parser = DatalogParser::new("?- parent(tom, Who).");
         let statements = parser.parse_all().unwrap();
-        
+
         assert_eq!(statements.len(), 1);
         match &statements[0] {
             Statement::Query(atom) => {
@@ -451,7 +452,7 @@ mod tests {
     fn test_variable_vs_constant() {
         let mut parser = DatalogParser::new("test(X, bob, Y, alice).");
         let statements = parser.parse_all().unwrap();
-        
+
         match &statements[0] {
             Statement::Fact(atom) => {
                 assert_eq!(atom.args[0], Term::Variable("X".into()));
@@ -476,5 +477,4 @@ mod tests {
             _ => panic!("expected rule"),
         }
     }
-
 }
