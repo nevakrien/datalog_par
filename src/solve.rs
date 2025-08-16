@@ -1,184 +1,371 @@
-use crate::parser::Statement;
-use crate::parser::DatalogParser;
-use crate::parser::ParseError;
-use std::sync::RwLock;
-use hashbrown::HashMap;
-use hashbrown::HashSet;
-use crate::unique::{ListId,Registery,Store};
-use crate::parser::{Term as RawTerm,Atom as RawAtom, Rule as RawRule};
+// ================== kb builder / deduper ==================
+use hashbrown::hash_map::Entry;
+use hashbrown::{HashMap, HashSet};
+use std::fmt;
+use std::num::NonZeroU32;
 
-pub type Cond<'a,'b1,'b2> = ListId<'b2, Atom<'a,'b1>>;
-pub type Terms<'a,'b> = ListId<'b, Term<'a>>;
-pub type Name<'a> = ListId<'a, u8>;
+use crate::parser::{Atom as RawAtom, Rule as RawRule, Statement, Term as RawTerm};
 
-#[derive(Debug,Clone,Eq,PartialEq,Copy,Hash)]
-pub enum Term<'a>{
-	Variable(Name<'a>),
-    Constant(Name<'a>),
+// ---- Non-zero IDs (separate namespaces) ----
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
+pub struct PredId(NonZeroU32);
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
+pub struct ConstId(NonZeroU32);
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
+pub struct VarId(NonZeroU32); // per clause
+
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+pub enum TermId {
+    Var(VarId),
+    Const(ConstId),
 }
 
-impl<'a> Term<'a>{
-	pub fn new(raw:&RawTerm,preds:&'a Registery<u8>)->Self{
-		match raw{
-			RawTerm::Variable(s)=>Term::Variable(preds.get_unique(s.as_bytes())),
-			RawTerm::Constant(s)=>Term::Constant(preds.get_unique(s.as_bytes())),
-		}	
-	}
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+pub struct AtomId {
+    pub pred: PredId,
+    pub args: Box<[TermId]>, // immutable, arity is fixed
 }
 
-#[derive(Debug, Clone, PartialEq,Eq,Hash)]
-pub struct Atom<'a,'b> {
-    pub predicate: Name<'a>,
-    pub args: Terms<'a,'b>,
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+pub struct RuleId {
+    pub head: AtomId,
+    pub body: Box<[AtomId]>, // immutable
 }
 
-impl<'a,'b> Atom<'a, 'b>{
-	pub fn new(raw:&RawAtom,preds:&'a Registery<u8>,terms:&'b Registery<Term<'a>>)->Self{
-		let predicate = preds.get_unique(raw.predicate.as_bytes());
-		let args : Vec<_>= raw.args.iter().map(|x| {
-			Term::new(x,preds)
-		}).collect();
-		let args = terms.get_unique(&args);
-		Self{
-			predicate,
-			args
-		}
-	}
+// ---- Interner for predicates (with arity) and constants ----
+#[derive(Default)]
+pub struct Interner {
+    pred_map: HashMap<Box<str>, PredId>,
+    pred_names: Vec<Box<str>>,
+    pred_arity: Vec<u32>, // fixed at first sight
+
+    const_map: HashMap<Box<str>, ConstId>,
+    const_names: Vec<Box<str>>,
 }
 
-#[derive(Debug, Clone, PartialEq,Eq,Hash)]
-pub struct Rule<'a,'b1,'b2> {
-    pub head: Atom<'a,'b1>,
-    pub body: Cond<'a,'b1,'b2>,
+impl Interner {
+    #[inline]
+    fn nz(n: u32) -> NonZeroU32 { NonZeroU32::new(n).unwrap() }
+
+    pub fn intern_pred_with_arity(&mut self, name: &Box<str>, arity: u32) -> Result<PredId, KBError> {
+        if let Some(&id) = self.pred_map.get(name) {
+            let ix = (id.0.get() - 1) as usize;
+            let a = self.pred_arity[ix];
+            if a == arity {
+                Ok(id)
+            } else {
+                Err(KBError::WrongArity { predicate: self.pred_names[ix].clone(), expected: a, found: arity })
+            }
+        } else {
+            let id = PredId(Self::nz(self.pred_names.len() as u32 + 1));
+            self.pred_names.push(name.clone());
+            self.pred_map.insert(self.pred_names.last().unwrap().clone(), id);
+            self.pred_arity.push(arity);
+            Ok(id)
+        }
+    }
+
+    pub fn get_pred_if_known(&self, name: &Box<str>) -> Option<(PredId, u32)> {
+        let &id = self.pred_map.get(name)?;
+        let ix = (id.0.get() - 1) as usize;
+        Some((id, self.pred_arity[ix]))
+    }
+
+    pub fn intern_const(&mut self, name: &Box<str>) -> ConstId {
+        if let Some(&id) = self.const_map.get(name) { return id; }
+        let id = ConstId(Self::nz(self.const_names.len() as u32 + 1));
+        self.const_names.push(name.clone());
+        self.const_map.insert(self.const_names.last().unwrap().clone(), id);
+        id
+    }
+
+    pub fn get_const_if_known(&self, name: &Box<str>) -> Option<ConstId> {
+        self.const_map.get(name).copied()
+    }
+
+    pub fn pred_name(&self, id: PredId) -> &str { self.pred_names[(id.0.get() - 1) as usize].as_ref() }
+    pub fn const_name(&self, id: ConstId) -> &str { self.const_names[(id.0.get() - 1) as usize].as_ref() }
+    pub fn pred_arity_of(&self, id: PredId) -> u32 { self.pred_arity[(id.0.get() - 1) as usize] }
 }
 
-impl<'a,'b1,'b2> Rule<'a,'b1,'b2>{
-	pub fn new(raw:&RawRule,
-		preds:&'a Registery<u8>,
-		terms:&'b1 Registery<Term<'a>>,
-		atoms:&'b2 Registery<Atom<'a,'b1>>
-	)->Self{
-		let head = Atom::new(&raw.head,preds,terms);
-		let body :Vec<_>= raw.body.iter().map(|a|{
-			Atom::new(a,preds,terms)
-		}).collect();
-		let body = atoms.get_unique(&*body);
-
-		Self{
-			head,
-			body
-		}
-	}
+// ---- Clause-local variable scope (alpha-renaming) ----
+struct VarScope {
+    map: HashMap<Box<str>, VarId>,
+    next: u32,
+}
+impl VarScope {
+    fn new() -> Self { Self { map: HashMap::new(), next: 0 } }
+    #[inline] fn fresh(&mut self) -> VarId {
+        self.next += 1;
+        VarId(NonZeroU32::new(self.next).unwrap())
+    }
+    fn get(&mut self, v: &Box<str>) -> VarId {
+        match self.map.entry(v.clone()) {
+            Entry::Occupied(o) => *o.get(),
+            Entry::Vacant(vac) => {
+                self.next += 1;
+                let id = VarId(NonZeroU32::new(self.next).unwrap());
+                vac.insert(id);
+                id
+            }
+        }
+    }
+    fn anon(&mut self) -> VarId { self.fresh() }
 }
 
-#[test]
-fn test_store_rule() {
-	use crate::parser::DatalogParser;
-	use crate::parser::Statement;
-
-    let mut parser = DatalogParser::new("grandparent(X, Z) :- parent(X, Y), parent(Y, Z).");
-    let statements = parser.parse_all().unwrap();
-    
-    assert_eq!(statements.len(), 1);
-    let Statement::Rule(ref raw) = statements[0] else { panic!() };
-    let preds = Registery::default();
-    let terms = Registery::default();
-    let atoms = Registery::default();
-    let _rule = Rule::new(&raw,&preds,&terms,&atoms);
+// ---- Errors (Box<str>, no String) ----
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KBError {
+    WrongArity { predicate: Box<str>, expected: u32, found: u32 },
+    HeadVarNotBound { predicate: Box<str>, arg_idx: usize },
+    UnknownPredicateInQuery { predicate: Box<str> },
+    UnknownConstantInQuery { predicate: Box<str>, constant: Box<str> },
 }
 
-pub struct Regs<'a,'b1,'b2>{
-	pub preds:&'a Registery<u8>,
-	pub terms:&'b1 Registery<Term<'a>>,
-	pub atoms:&'b2 Registery<Atom<'a,'b1>>
+impl fmt::Display for KBError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use KBError::*;
+        match self {
+            WrongArity { predicate, expected, found } =>
+                write!(f, "Predicate '{}' arity mismatch: expected {}, found {}.", predicate, expected, found),
+            HeadVarNotBound { predicate, arg_idx } =>
+                write!(f, "Rule {}(...): head var at position {} not bound in body.", predicate, arg_idx),
+            UnknownPredicateInQuery { predicate } =>
+                write!(f, "Query references unknown predicate '{}'.", predicate),
+            UnknownConstantInQuery { predicate, constant } =>
+                write!(f, "Query on '{}' uses unknown constant '{}'.", predicate, constant),
+        }
+    }
 }
 
-impl<'a,'b1,'b2> Regs<'a,'b1,'b2>{
-	pub fn make_atom(&self,raw:&RawAtom)->Atom<'a,'b1>{
-		Atom::new(raw,&self.preds,&self.terms)
-	}
-	pub fn make_rule(&self,raw:&RawRule)->Rule<'a,'b1,'b2>{
-		Rule::new(raw,&self.preds,&self.terms,&self.atoms)
-	}
+// ---- KB (single owner) ----
+#[derive(Default)]
+pub struct KB {
+    pub(crate) inter: Interner,
+
+    // 1) ground facts (all-constant head)
+    pub(crate) ground_facts: HashSet<AtomId>,
+    // 2) generic facts (head may have vars; empty body)
+    pub(crate) generic_facts: HashSet<AtomId>,
+
+    // 3) rules (dedup set)
+    pub(crate) rules: HashSet<RuleId>,
+
+    // producers split by kind (vec buckets)
+    pub(crate) producers_rules: HashMap<PredId, Vec<RuleId>>,   // pred -> rules (cloned from set key)
+    pub(crate) producers_ground: HashMap<PredId, Vec<AtomId>>,  // pred -> ground facts
+    pub(crate) producers_generic: HashMap<PredId, Vec<AtomId>>, // pred -> generic facts
 }
 
-pub struct Given<'a,'b1,'b2>{
-	pub rules:HashMap<Name<'a>,Vec<Rule<'a,'b1,'b2>>>,
-	pub generic_facts:HashMap<Name<'a>,Vec<Atom<'a,'b1>>>,
-	pub true_facts:HashMap<Name<'a>,Vec<Atom<'a,'b1>>>,
-	pub consts:HashSet<Name<'a>>,
-	pub regs:Regs<'a,'b1,'b2>
+impl KB {
+    pub fn new() -> Self { Self::default() }
+    pub fn interner(&self) -> &Interner { &self.inter }
+
+    pub fn add_statement(&mut self, st: &Statement) -> Result<(), KBError> {
+        match st {
+            Statement::Fact(a) => self.add_fact_or_generic(a),
+            Statement::Rule(r) => self.add_rule(r),
+            Statement::Query(a) => self.validate_query(a), // do NOT store queries
+        }
+    }
+
+    // ----- atoms -----
+    fn canon_atom(&mut self, a: &RawAtom, vs: &mut VarScope) -> Result<AtomId, KBError> {
+        let pred = self.inter.intern_pred_with_arity(&a.predicate, a.args.len() as u32)?;
+        let args = a.args.iter().map(|t| match t {
+            RawTerm::Variable(v) if v.as_ref() == "_" => TermId::Var(vs.anon()),
+            RawTerm::Variable(v) => TermId::Var(vs.get(v)),
+            RawTerm::Constant(c) => TermId::Const(self.inter.intern_const(c)),
+        }).collect::<Vec<_>>().into_boxed_slice();
+        Ok(AtomId { pred, args })
+    }
+
+    #[inline]
+    fn is_ground_atom(a: &AtomId) -> bool {
+        a.args.iter().all(|t| matches!(t, TermId::Const(_)))
+    }
+
+    // Parser `Fact(_)` may contain variables → treat as generic fact.
+    fn add_fact_or_generic(&mut self, a: &RawAtom) -> Result<(), KBError> {
+        let mut vs = VarScope::new();
+        let aid = self.canon_atom(a, &mut vs)?; // establishes arity/IDs
+
+        if Self::is_ground_atom(&aid) {
+            if self.ground_facts.insert(aid.clone()) {
+                self.producers_ground.entry(aid.pred).or_default().push(aid);
+            }
+        } else {
+            if self.generic_facts.insert(aid.clone()) {
+                self.producers_generic.entry(aid.pred).or_default().push(aid);
+            }
+        }
+        Ok(())
+    }
+
+    // Rules must have non-empty body; if body is empty, route to fact/generic.
+    fn add_rule(&mut self, r: &RawRule) -> Result<(), KBError> {
+        if r.body.is_empty() {
+            return self.add_fact_or_generic(&r.head);
+        }
+
+        let mut vs = VarScope::new();
+        let head = self.canon_atom(&r.head, &mut vs)?;
+
+        // dedupe body atoms while preserving order
+        let mut seen = HashSet::new();
+        let mut body_vec = Vec::with_capacity(r.body.len());
+        for a in &r.body {
+            let ca = self.canon_atom(a, &mut vs)?;
+            if seen.insert(ca.clone()) { body_vec.push(ca); }
+        }
+
+        // range-restriction: each head var must appear in body
+        for (i, t) in head.args.iter().enumerate() {
+            if let TermId::Var(vh) = t {
+                let found = body_vec.iter().any(|b|
+                    b.args.iter().any(|bt| matches!(bt, TermId::Var(vb) if vb == vh)));
+                if !found {
+                    return Err(KBError::HeadVarNotBound { predicate: r.head.predicate.clone(), arg_idx: i });
+                }
+            }
+        }
+
+        let rule = RuleId { head: head.clone(), body: body_vec.into_boxed_slice() };
+
+        // O(1) dedupe by set; if inserted, append to producer bucket
+        if self.rules.insert(rule.clone()) {
+            self.producers_rules.entry(head.pred).or_default().push(rule);
+        }
+        Ok(())
+    }
+
+    // Queries must not add info: pred+arity must exist, constants must be known.
+    fn validate_query(&mut self, a: &RawAtom) -> Result<(), KBError> {
+        let (_pred, expect_arity) = self.inter
+            .get_pred_if_known(&a.predicate)
+            .ok_or_else(|| KBError::UnknownPredicateInQuery { predicate: a.predicate.clone() })?;
+        let found_arity = a.args.len() as u32;
+        if expect_arity != found_arity {
+            return Err(KBError::WrongArity { predicate: a.predicate.clone(), expected: expect_arity, found: found_arity });
+        }
+        for t in &a.args {
+            if let RawTerm::Constant(c) = t {
+                if self.inter.get_const_if_known(c).is_none() {
+                    return Err(KBError::UnknownConstantInQuery { predicate: a.predicate.clone(), constant: c.clone() });
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
-impl<'a,'b1,'b2> Given<'a,'b1,'b2>{
-	pub fn new(regs:Regs<'a,'b1,'b2>) -> Self{
-		Self{
-			rules:HashMap::new(),
-			generic_facts:HashMap::new(),
-			true_facts:HashMap::new(),
-			consts:HashSet::new(),
-			regs,
-		}
-	}
-	pub fn add_names(&mut self,names:impl Iterator<Item=Term<'a>>){
-		self.consts.extend(names.filter_map(|t|{
-			match t {
-				Term::Constant(c)=>Some(c.clone()),
-				Term::Variable(_)=>None,
-			}
-		}))
-	}
-	pub fn add_rule(&mut self,rule:&RawRule){
-		//we need to keep it so facts are the only "something from nothing"
-		if rule.body.is_empty(){
-			return self.add_fact(&rule.head);
-		}
 
+// ---- Tests for KB layer ----
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::DatalogParser;
 
-		let rule = self.regs.make_rule(rule);
-		self.add_names(rule.body.iter().flat_map(|x| x.args.iter()).cloned());
-		self.add_names(rule.head.args.iter().cloned());
+    fn build(input: &str) -> Result<KB, KBError> {
+        let mut p = DatalogParser::new(input);
+        let stmts = p.parse_all().unwrap();
+        let mut kb = KB::new();
+        for s in &stmts { kb.add_statement(s)?; }
+        Ok(kb)
+    }
 
-		self.rules.entry(rule.head.predicate).or_default().push(rule);
-	}
-	pub fn add_fact(&mut self,atom:&RawAtom){
-		let atom = self.regs.make_atom(atom);
-		self.add_names(atom.args.iter().cloned());
+    #[test]
+    fn producers_split_and_rule_dedupe() {
+        let kb = build(
+            "parent(tom,bob).
+             parent(bob,alice).
+             ancestor(X,Z) :- parent(X,Z).
+             ancestor(X,Z) :- parent(X,Y), parent(Y,Z).
+             ancestor(A,B) :- parent(A,C), parent(C,B)."
+        ).unwrap();
 
-		if atom.args.iter().all(|x|{matches!(x,Term::Constant(_))}){
-			self.generic_facts.entry(atom.predicate).or_default().push(atom);
+        // rules deduped by alpha-equivalence: last two are equivalent
+        assert_eq!(kb.rules.len(), 2);
 
-		}else{
-			self.true_facts.entry(atom.predicate).or_default().push(atom);
-		}
-	}
+        // producers split:
+        let (pid, _) = kb.inter.get_pred_if_known(&"ancestor".into()).unwrap();
+        assert!(kb.producers_ground.get(&pid).is_none());   // no ground facts for ancestor
+        assert!(kb.producers_generic.get(&pid).is_none());  // no generic facts either
+        assert_eq!(kb.producers_rules.get(&pid).unwrap().len(), 2);
+    }
 
-	pub fn add_till_query(&mut self,parser:&mut DatalogParser<'a>)->Result<Option<Atom<'a,'b1>>, ParseError>{
-		while let Some(stmt) = parser.parse_statement()?{
-			match stmt {
-			    Statement::Fact(f) => self.add_fact(&f), 
-			    Statement::Rule(r) => self.add_rule(&r), 
-			    Statement::Query(q) => {
-			    	//TODO technically we need to add the names here...
-			    	//but only to the query scope which is weird
-			    	//this probably is best handle in  query but still
-			    	return Ok(Some(self.regs.make_atom(&q)));
-			    },
-			}
-		}
-		Ok(None)
-	}
+    #[test]
+    fn fact_vs_generic_fact_buckets() {
+        let kb = build(
+            "p(a,b).
+             p(X,Y).        % generic fact (variables, no body)
+             q(a).          % ground fact
+             r(X) :- .      % empty body rule becomes generic fact
+            "
+        ).unwrap();
+
+        let (p_pid, _) = kb.inter.get_pred_if_known(&"p".into()).unwrap();
+        let (q_pid, _) = kb.inter.get_pred_if_known(&"q".into()).unwrap();
+        let (r_pid, _) = kb.inter.get_pred_if_known(&"r".into()).unwrap();
+
+        // p/2: both one ground and one generic
+        assert!(kb.producers_ground.get(&p_pid).unwrap().len() == 1);
+        assert!(kb.producers_generic.get(&p_pid).unwrap().len() == 1);
+
+        // q/1: only ground
+        assert!(kb.producers_ground.get(&q_pid).unwrap().len() == 1);
+        assert!(kb.producers_generic.get(&q_pid).is_none());
+
+        // r/1: came from an empty-body rule -> generic fact
+        assert!(kb.producers_generic.get(&r_pid).unwrap().len() == 1);
+        assert!(kb.producers_rules.get(&r_pid).is_none());
+    }
+
+    #[test]
+    fn query_checks_dont_add_info() {
+        // Introduce parent/2 and constants
+        let mut p = DatalogParser::new(
+            "parent(tom,bob).
+             ?- parent(tom,Who).
+             ?- parent(tom,alice)."
+        );
+        let stmts = p.parse_all().unwrap();
+        let mut b = KB::new();
+
+        // ground fact registers pred/arity and constants {tom,bob}
+        b.add_statement(&stmts[0]).unwrap();
+
+        // query with new variable OK
+        b.add_statement(&stmts[1]).unwrap();
+
+        // query with new constant 'alice' should fail
+        match b.add_statement(&stmts[2]) {
+            Err(KBError::UnknownConstantInQuery { predicate, constant }) => {
+                assert_eq!(predicate.as_ref(), "parent");
+                assert_eq!(constant.as_ref(), "alice");
+            }
+            other => panic!("expected UnknownConstantInQuery, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn head_var_not_bound_errors() {
+        let mut p = DatalogParser::new("s(X) :- t(Y).");
+        let stmts = p.parse_all().unwrap();
+        let mut b = KB::new();
+        match b.add_statement(&stmts[0]) {
+            Err(KBError::HeadVarNotBound { predicate, arg_idx }) => {
+                assert_eq!(predicate.as_ref(), "s");
+                assert_eq!(arg_idx, 0);
+            }
+            other => panic!("expected HeadVarNotBound, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn body_duplicate_atoms_are_removed() {
+        let kb = build("p(X) :- q(X), q(X), q(X).").unwrap();
+        let body = &kb.rules.iter().next().unwrap().body;
+        assert_eq!(body.len(), 1);
+    }
 }
-
-// pub struct QuertMeta<'a,'b1>{
-// 	query:Atom<'a,'b1>,
-// 	cache:Store<Name<'a>,RwLock<HashSet<Terms<'a,'b1>>>>,
-// 	relvent:HashSet<Name<'a>>
-// }
-
-// impl<'a,'b1>  QuertMeta<'a,'b1>{
-// 	pub fn new(query:Atom<'a,'b1>,given:&Given<'a,'b1,'_>)->Self{
-
-// 		todo!()
-// 	}
-// }

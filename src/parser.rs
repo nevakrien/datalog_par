@@ -1,34 +1,34 @@
-//made by claude4
+// made by claude4 + comments
 use std::fmt;
-use std::str::Chars;
 use std::iter::Peekable;
+use std::str::Chars;
 
-#[derive(Debug, Clone, PartialEq,Eq,Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Term {
     Variable(Box<str>),
     Constant(Box<str>),
 }
 
-#[derive(Debug, Clone, PartialEq,Eq,Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Atom {
     pub predicate: Box<str>,
     pub args: Vec<Term>,
 }
 
-#[derive(Debug, Clone, PartialEq,Eq,Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Rule {
     pub head: Atom,
     pub body: Vec<Atom>,
 }
 
-#[derive(Debug, Clone, PartialEq,Eq,Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Statement {
     Fact(Atom),
     Rule(Rule),
     Query(Atom),
 }
 
-#[derive(Debug,PartialEq,Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum ParseError {
     UnexpectedToken(Box<str>),
     UnexpectedEof,
@@ -64,17 +64,79 @@ impl<'a> DatalogParser<'a> {
         self.current_token = self.next_token();
     }
 
-    fn next_token(&mut self) -> Option<String> {
-        // Skip whitespace
+    #[inline]
+    fn skip_line_comment(&mut self) {
         while let Some(&ch) = self.chars.peek() {
-            if ch.is_whitespace() {
-                self.chars.next();
-            } else {
+            if ch == '\n' || ch == '\r' {
                 break;
             }
+            self.chars.next();
         }
+    }
 
-        // Check if we're at end of input
+    #[inline]
+    fn skip_block_comment(&mut self) {
+        // Non-nesting: consume until the next "*/" or EOF
+        let mut prev = '\0';
+        while let Some(ch) = self.chars.next() {
+            if prev == '*' && ch == '/' {
+                return; // closed
+            }
+            prev = ch;
+        }
+        // EOF: treat as closed (parser will likely hit UnexpectedEof later if needed)
+    }
+
+    fn skip_ws_and_comments(&mut self) {
+        loop {
+            // skip whitespace
+            while let Some(&ch) = self.chars.peek() {
+                if ch.is_whitespace() {
+                    self.chars.next();
+                } else {
+                    break;
+                }
+            }
+
+            // check for comments: %, //, /* ... */
+            let mut cloned = self.chars.clone();
+            match cloned.next() {
+                Some('%') => {
+                    // consume '%' and the rest of the line
+                    self.chars.next();
+                    self.skip_line_comment();
+                    continue;
+                }
+                Some('/') => {
+                    match cloned.next() {
+                        Some('/') => {
+                            // consume both slashes, then rest of line
+                            self.chars.next();
+                            self.chars.next();
+                            self.skip_line_comment();
+                            continue;
+                        }
+                        Some('*') => {
+                            // consume "/*" and skip until "*/"
+                            self.chars.next();
+                            self.chars.next();
+                            self.skip_block_comment();
+                            continue;
+                        }
+                        _ => { /* not a comment */ }
+                    }
+                }
+                _ => { /* not a comment */ }
+            }
+            break;
+        }
+    }
+
+    fn next_token(&mut self) -> Option<String> {
+        // Skip whitespace and comments repeatedly
+        self.skip_ws_and_comments();
+
+        // End of input?
         let first_char = self.chars.next()?;
 
         match first_char {
@@ -95,7 +157,6 @@ impl<'a> DatalogParser<'a> {
                     self.chars.next(); // consume '-'
                     Some("?-".to_string())
                 } else {
-                    // '?' is part of an identifier, collect the full token
                     let mut token = String::new();
                     token.push('?');
                     self.collect_identifier_chars(&mut token)
@@ -114,10 +175,10 @@ impl<'a> DatalogParser<'a> {
             match ch {
                 ' ' | '\t' | '\n' | '\r' | '(' | ')' | ',' | '.' => break,
                 ':' | '?' => {
-                    // Check if this starts a special token
+                    // Check if this starts a special token (:- or ?-)
                     if let Some(&next_ch) = self.chars.peek() {
                         if next_ch == '-' {
-                            break; // Let the next call handle :- or ?-
+                            break;
                         }
                     }
                     token.push(ch);
@@ -226,7 +287,7 @@ impl<'a> DatalogParser<'a> {
         // Parse atom (could be fact or head of rule)
         let atom = self.parse_atom()?;
 
-        // Check what follows
+        // What follows?
         match self.current_token() {
             Some(token) if token == "." => {
                 self.advance();
@@ -234,8 +295,16 @@ impl<'a> DatalogParser<'a> {
             }
             Some(token) if token == ":-" => {
                 self.advance();
-                
-                // Parse body atoms
+
+                // Allow EMPTY BODY: ":- ."
+                if let Some(tok) = self.current_token() {
+                    if tok == "." {
+                        self.advance();
+                        return Ok(Some(Statement::Rule(Rule { head: atom, body: Vec::new() })));
+                    }
+                }
+
+                // Otherwise, parse one-or-more atoms separated by commas, terminated by '.'
                 let mut body = Vec::new();
                 body.push(self.parse_atom()?);
 
@@ -258,6 +327,7 @@ impl<'a> DatalogParser<'a> {
         }
     }
 
+
     pub fn parse_all(&mut self) -> Result<Vec<Statement>, ParseError> {
         let mut statements = Vec::new();
 
@@ -269,11 +339,62 @@ impl<'a> DatalogParser<'a> {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_with_percent_and_slash_comments() {
+        let src = r#"
+            % a line comment
+            parent(tom, bob). // trailing comment
+
+            /* block
+               comment */
+            grandparent(X, Z) /* inline block */ :- parent(X, Y), // mid-line //
+                                parent(Y, Z).  % end
+            ?- parent(tom, Who).  // query
+        "#;
+
+        let mut parser = DatalogParser::new(src);
+        let statements = parser.parse_all().unwrap();
+
+        assert_eq!(statements.len(), 3);
+
+        match &statements[0] {
+            Statement::Fact(atom) => {
+                assert_eq!(atom.predicate.as_ref(), "parent");
+                assert_eq!(atom.args.len(), 2);
+            }
+            _ => panic!("expected fact"),
+        }
+
+        match &statements[1] {
+            Statement::Rule(rule) => {
+                assert_eq!(rule.head.predicate.as_ref(), "grandparent");
+                assert_eq!(rule.body.len(), 2);
+            }
+            _ => panic!("expected rule"),
+        }
+
+        match &statements[2] {
+            Statement::Query(atom) => {
+                assert_eq!(atom.predicate.as_ref(), "parent");
+                assert_eq!(atom.args.len(), 2);
+            }
+            _ => panic!("expected query"),
+        }
+    }
+
+    #[test]
+    fn test_block_comment_at_eof_is_ok() {
+        // Unterminated block just ends input; parser will stop cleanly.
+        let src = "p(a,b). /* not closed";
+        let mut p = DatalogParser::new(src);
+        let v = p.parse_all().unwrap();
+        assert_eq!(v.len(), 1);
+    }
+
 
     #[test]
     fn test_parse_fact() {
@@ -341,4 +462,19 @@ mod tests {
             _ => panic!("Expected fact"),
         }
     }
+
+    #[test]
+    fn test_empty_body_rule_ok() {
+        let mut p = DatalogParser::new("r(X) :- .");
+        let v = p.parse_all().unwrap();
+        assert_eq!(v.len(), 1);
+        match &v[0] {
+            Statement::Rule(rule) => {
+                assert_eq!(rule.head.predicate.as_ref(), "r");
+                assert!(rule.body.is_empty());
+            }
+            _ => panic!("expected rule"),
+        }
+    }
+
 }
