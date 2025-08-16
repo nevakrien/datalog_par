@@ -1,6 +1,7 @@
 // ================== kb builder / deduper ==================
 use hashbrown::hash_map::Entry;
 use hashbrown::{HashMap, HashSet};
+use std::cmp::Ordering;
 use std::fmt;
 use std::num::NonZeroU32;
 
@@ -25,27 +26,24 @@ impl Term32 {
     #[inline] pub const fn is_var(self) -> bool { self.0 >= 0 }
     #[inline] pub const fn is_const(self) -> bool { self.0 < 0 }
 
-    // Infallible getters with debug checks
     #[inline] pub fn var_index(self) -> u32 {
-        debug_assert!(self.is_var(), "Term32::var_index called on non-var: {:?}", self);
+        debug_assert!(self.is_var(), "var_index on non-var");
         self.0 as u32
     }
     #[inline] pub fn const_id(self) -> ConstId {
-        debug_assert!(self.is_const(), "Term32::const_id called on non-const: {:?}", self);
+        debug_assert!(self.is_const(), "const_id on non-const");
         let raw = (-self.0) as u32;
         debug_assert!(raw >= 1, "encoded const id must be >= 1");
-        // safe: we just asserted raw >= 1
         unsafe { ConstId(NonZeroU32::new_unchecked(raw)) }
     }
 }
 
-// Public ergonomic view (optional, handy for APIs)
+// Public ergonomic view (optional)
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum Term {
     Var(u32),       // 0-based
     Const(ConstId), // interned
 }
-
 impl From<Term> for Term32 {
     #[inline]
     fn from(t: Term) -> Self {
@@ -55,15 +53,10 @@ impl From<Term> for Term32 {
         }
     }
 }
-
 impl From<Term32> for Term {
     #[inline]
     fn from(t: Term32) -> Self {
-        if t.is_var() {
-            Term::Var(t.var_index())
-        } else {
-            Term::Const(t.const_id())
-        }
+        if t.is_var() { Term::Var(t.var_index()) } else { Term::Const(t.const_id()) }
     }
 }
 
@@ -74,10 +67,43 @@ pub struct AtomId {
     pub args: Box<[Term32]>, // immutable, arity is fixed
 }
 
+impl AtomId {
+    #[inline]
+    fn var_count(&self) -> usize {
+        self.args.iter().filter(|t| t.is_var()).count()
+    }
+}
+
+// Total order for canonical sorting/dedup in rule bodies
+impl Ord for AtomId {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // 1) fewest vars first (least general first)
+        match self.var_count().cmp(&other.var_count()) {
+            Ordering::Equal => {
+                // 2) by predicate id
+                match self.pred.cmp(&other.pred) {
+                    Ordering::Equal => {
+                        // 3) lexicographic by args (raw i32)
+                        self.args.as_ref().cmp(other.args.as_ref())
+                    }
+                    o => o,
+                }
+            }
+            o => o,
+        }
+    }
+}
+impl PartialOrd for AtomId {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub struct RuleId {
     pub head: AtomId,
-    pub body: Box<[AtomId]>, // immutable
+    pub body: Box<[AtomId]>, // immutable, CANONICALLY SORTED (see add_rule)
 }
 
 // ---- Interner for predicates (with arity) and constants ----
@@ -140,14 +166,13 @@ struct VarScope {
 }
 impl VarScope {
     fn new() -> Self { Self { map: HashMap::new(), next: 0 } }
-    #[inline] fn fresh_ix(&mut self) -> u32 { let ix = self.next; self.next += 1; ix }
-    fn get_ix(&mut self, v: &Box<str>) -> u32 {
+    #[inline] fn get_ix(&mut self, v: &Box<str>) -> u32 {
         match self.map.entry(v.clone()) {
             Entry::Occupied(o) => *o.get(),
             Entry::Vacant(vac) => { let ix = self.next; self.next += 1; vac.insert(ix); ix }
         }
     }
-    fn anon_ix(&mut self) -> u32 { self.fresh_ix() }
+    #[inline] fn anon_ix(&mut self) -> u32 { let ix = self.next; self.next += 1; ix }
 }
 
 // ---- Errors (Box<str>, no String) ----
@@ -267,15 +292,15 @@ impl KB {
         let mut vs = VarScope::new();
         let head = self.canon_atom(&r.head, &mut vs)?;
 
-        // dedupe body atoms while preserving order
-        let mut seen = HashSet::new();
-        let mut body_vec = Vec::with_capacity(r.body.len());
+        // collect, then canonical sort + dedup; kills permutations & duplicates
+        let mut body_vec: Vec<AtomId> = Vec::with_capacity(r.body.len());
         for a in &r.body {
-            let ca = self.canon_atom(a, &mut vs)?;
-            if seen.insert(ca.clone()) { body_vec.push(ca); }
+            body_vec.push(self.canon_atom(a, &mut vs)?);
         }
+        body_vec.sort_unstable();       // uses Ord on AtomId
+        body_vec.dedup();               // adjacent duplicates removed
 
-        // range-restriction: each head var must appear in body
+        // range-restriction: each head var must appear in (deduped, sorted) body
         for (i, &t) in head.args.iter().enumerate() {
             if t.is_var() {
                 let vh = t;
@@ -438,4 +463,68 @@ mod tests {
         let body = &kb.rules.iter().next().unwrap().body;
         assert_eq!(body.len(), 1);
     }
+
+    #[test]
+	fn body_ordering_partitions_ground_before_non_ground_and_dedupes() {
+	    use crate::parser::DatalogParser;
+
+	    // Mixed body: duplicates + permutation; two clauses that are logically the same
+	    let mut p = DatalogParser::new(
+	        "p(X) :- s(Y), r(c1), q(X), t(c2), r(c1), q(X).
+	         p(U) :- t(c2), q(U), s(V), r(c1)."
+	    );
+	    let stmts = p.parse_all().unwrap();
+
+	    // Build KB
+	    let mut kb = super::KB::new();
+	    for s in &stmts {
+	        kb.add_statement(s).unwrap();
+	    }
+
+	    // Fetch producers for head predicate p/1
+	    let (ppred, _) = kb.inter.get_pred_if_known(&"p".into()).unwrap();
+	    let prod = kb.producers.get(&ppred).expect("no producers for p/1");
+
+	    // Only ONE canonical rule should remain (permutation & dup collapse)
+	    assert_eq!(prod.rules.len(), 1, "rules should dedupe by canonical body order");
+
+	    let body = &prod.rules[0].body;
+
+	    // We expect these unique atoms in the body: r(c1), t(c2), q(X), s(Y) => 4
+	    assert_eq!(body.len(), 4, "body should be deduped to 4 unique atoms");
+
+	    // Check the partition: all ground atoms first, then all with variables
+	    let mut first_non_ground = body.len();
+	    for (i, atom) in body.iter().enumerate() {
+	        let is_ground = atom.args.iter().all(|t| t.is_const());
+	        if !is_ground {
+	            first_non_ground = i;
+	            break;
+	        }
+	    }
+	    // If there are any non-ground atoms, ensure everything before is ground
+	    for i in 0..first_non_ground {
+	        assert!(
+	            body[i].args.iter().all(|t| t.is_const()),
+	            "expected ground atom before the first non-ground atom at index {}",
+	            first_non_ground
+	        );
+	    }
+	    // And everything from that point on is non-ground
+	    for i in first_non_ground..body.len() {
+	        assert!(
+	            body[i].args.iter().any(|t| t.is_var()),
+	            "expected non-ground atom at or after the partition index {}",
+	            first_non_ground
+	        );
+	    }
+
+	    // Also verify there are no accidental duplicates post-sort/dedup
+	    use hashbrown::HashSet;
+	    let mut seen = HashSet::new();
+	    for a in body.iter() {
+	        assert!(seen.insert(a), "duplicate atom remained after canonicalization: {:?}", a);
+	    }
+	}
+
 }
