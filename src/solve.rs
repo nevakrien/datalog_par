@@ -69,8 +69,8 @@ pub struct AtomId {
 
 impl AtomId {
     #[inline]
-    fn var_count(&self) -> usize {
-        self.args.iter().filter(|t| t.is_var()).count()
+    fn var_count(&self) -> i32 {
+        self.args.iter().filter(|t| t.is_var()).map(|i| i.0).max().unwrap_or(-1)
     }
 }
 

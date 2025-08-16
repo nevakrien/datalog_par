@@ -108,14 +108,22 @@ impl<K:Hash+Eq+Clone, V> Store<K, V>{
 		self.get_or(k,V::default)
 	}
 
+    pub fn try_get<'b>(&self, k: &'b K) ->Option<&V>{
+        if let Some(b) = self.0.read().unwrap().get(k){
+            return Some(unsafe{
+                &*(&**b as *const V)
+            })
+        }
+
+        None
+    }
+
 	//gets a value or inilizes with f.
 	//WARNING!!!: to avoid contention we might inilize the value more than once
 	//if this isnt desirble use get_or_once
 	pub fn get_or<'b>(&self, k: &'b K,f:impl FnOnce()->V) ->&V{
-    	if let Some(b) = self.0.read().unwrap().get(k){
-    		return unsafe{
-    			&*(&**b as *const V)
-    		}
+    	if let Some(ans) = self.try_get(k){
+    		return ans
     	}
 		
 		let k = k.clone();
@@ -128,11 +136,9 @@ impl<K:Hash+Eq+Clone, V> Store<K, V>{
     }
 
     pub fn get_or_once<'b>(&self, k: &'b K,f:impl FnOnce()->V) ->&V{
-    	if let Some(b) = self.0.read().unwrap().get(k){
-    		return unsafe{
-    			&*(&**b as *const V)
-    		}
-    	}
+    	if let Some(ans) = self.try_get(k){
+            return ans
+        }
 		
     	let mut lock = self.0.write().unwrap();		
 		let k = k.clone();
