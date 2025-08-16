@@ -69,16 +69,25 @@ pub struct AtomId {
 
 impl AtomId {
     #[inline]
-    fn var_count(&self) -> i32 {
-        self.args.iter().filter(|t| t.is_var()).map(|i| i.0).max().unwrap_or(-1)
+    fn bigest_var(&self) -> i32 {
+        self.args.iter().map(|i| i.0).max().unwrap_or(i32::MIN)
     }
+
+    // fn var_count(&self) -> usize{
+    // 	let ans = self.bigest_var();
+    // 	if ans < 0 {
+    // 		0
+    // 	}else{
+    // 		ans as usize +1
+    // 	}
+    // }
 }
 
 // Total order for canonical sorting/dedup in rule bodies
 impl Ord for AtomId {
     fn cmp(&self, other: &Self) -> Ordering {
         // 1) fewest vars first (least general first)
-        match self.var_count().cmp(&other.var_count()) {
+        match self.bigest_var().cmp(&other.bigest_var()) {
             Ordering::Equal => {
                 // 2) by predicate id
                 match self.pred.cmp(&other.pred) {
