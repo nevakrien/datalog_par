@@ -138,23 +138,33 @@ impl fmt::Display for KBError {
     }
 }
 
+// ---- Producers bucket per predicate ----
+#[derive(Default, Clone)]
+pub struct Producers {
+    pub rules: Vec<RuleId>,
+    pub ground: Vec<AtomId>,
+    pub generic: Vec<AtomId>,
+}
+impl Producers {
+    fn push_rule(&mut self, r: RuleId)   { self.rules.push(r); }
+    fn push_ground(&mut self, a: AtomId) { self.ground.push(a); }
+    fn push_generic(&mut self, a: AtomId){ self.generic.push(a); }
+}
+
 // ---- KB (single owner) ----
 #[derive(Default)]
 pub struct KB {
     pub(crate) inter: Interner,
 
-    // 1) ground facts (all-constant head)
+    // facts
     pub(crate) ground_facts: HashSet<AtomId>,
-    // 2) generic facts (head may have vars; empty body)
     pub(crate) generic_facts: HashSet<AtomId>,
 
-    // 3) rules (dedup set)
+    // rules (dedup set)
     pub(crate) rules: HashSet<RuleId>,
 
-    // producers split by kind (vec buckets)
-    pub(crate) producers_rules: HashMap<PredId, Vec<RuleId>>,   // pred -> rules (cloned from set key)
-    pub(crate) producers_ground: HashMap<PredId, Vec<AtomId>>,  // pred -> ground facts
-    pub(crate) producers_generic: HashMap<PredId, Vec<AtomId>>, // pred -> generic facts
+    // single lookup: pred -> Producers {rules, ground, generic}
+    pub(crate) producers: HashMap<PredId, Producers>,
 }
 
 impl KB {
@@ -165,8 +175,13 @@ impl KB {
         match st {
             Statement::Fact(a) => self.add_fact_or_generic(a),
             Statement::Rule(r) => self.add_rule(r),
-            Statement::Query(a) => self.validate_query(a), // do NOT store queries
+            Statement::Query(a) => self.validate_query(a), // queries do not mutate
         }
+    }
+
+    #[inline]
+    fn producers_mut(&mut self, p: PredId) -> &mut Producers {
+        self.producers.entry(p).or_default()
     }
 
     // ----- atoms -----
@@ -188,15 +203,15 @@ impl KB {
     // Parser `Fact(_)` may contain variables → treat as generic fact.
     fn add_fact_or_generic(&mut self, a: &RawAtom) -> Result<(), KBError> {
         let mut vs = VarScope::new();
-        let aid = self.canon_atom(a, &mut vs)?; // establishes arity/IDs
+        let aid = self.canon_atom(a, &mut vs)?;
 
         if Self::is_ground_atom(&aid) {
             if self.ground_facts.insert(aid.clone()) {
-                self.producers_ground.entry(aid.pred).or_default().push(aid);
+                self.producers_mut(aid.pred).push_ground(aid);
             }
         } else {
             if self.generic_facts.insert(aid.clone()) {
-                self.producers_generic.entry(aid.pred).or_default().push(aid);
+                self.producers_mut(aid.pred).push_generic(aid);
             }
         }
         Ok(())
@@ -232,9 +247,9 @@ impl KB {
 
         let rule = RuleId { head: head.clone(), body: body_vec.into_boxed_slice() };
 
-        // O(1) dedupe by set; if inserted, append to producer bucket
+        // global O(1) dedupe; only on insert update producers bucket
         if self.rules.insert(rule.clone()) {
-            self.producers_rules.entry(head.pred).or_default().push(rule);
+            self.producers_mut(head.pred).push_rule(rule);
         }
         Ok(())
     }
@@ -274,52 +289,60 @@ mod tests {
         Ok(kb)
     }
 
-    #[test]
-    fn producers_split_and_rule_dedupe() {
-        let kb = build(
-            "parent(tom,bob).
-             parent(bob,alice).
-             ancestor(X,Z) :- parent(X,Z).
-             ancestor(X,Z) :- parent(X,Y), parent(Y,Z).
-             ancestor(A,B) :- parent(A,C), parent(C,B)."
-        ).unwrap();
+	#[test]
+	fn producers_split_and_rule_dedupe() {
+	    let kb = build(
+	        "parent(tom,bob).
+	         parent(bob,alice).
+	         ancestor(X,Z) :- parent(X,Z).
+	         ancestor(X,Z) :- parent(X,Y), parent(Y,Z).
+	         ancestor(A,B) :- parent(A,C), parent(C,B)."
+	    ).unwrap();
 
-        // rules deduped by alpha-equivalence: last two are equivalent
-        assert_eq!(kb.rules.len(), 2);
+	    // rules deduped by alpha-equivalence: last two are equivalent
+	    assert_eq!(kb.rules.len(), 2);
 
-        // producers split:
-        let (pid, _) = kb.inter.get_pred_if_known(&"ancestor".into()).unwrap();
-        assert!(kb.producers_ground.get(&pid).is_none());   // no ground facts for ancestor
-        assert!(kb.producers_generic.get(&pid).is_none());  // no generic facts either
-        assert_eq!(kb.producers_rules.get(&pid).unwrap().len(), 2);
-    }
+	    // producers split:
+	    let (pid, _) = kb.inter.get_pred_if_known(&"ancestor".into()).unwrap();
+	    let prod = kb.producers.get(&pid).expect("ancestor producers exist");
+	    assert_eq!(prod.ground.len(),  0, "no ground facts for ancestor");
+	    assert_eq!(prod.generic.len(), 0, "no generic facts for ancestor");
+	    assert_eq!(prod.rules.len(),   2, "two distinct ancestor rules");
+	}
 
-    #[test]
-    fn fact_vs_generic_fact_buckets() {
-        let kb = build(
-            "p(a,b).
-             p(X,Y).        % generic fact (variables, no body)
-             q(a).          % ground fact
-             r(X) :- .      % empty body rule becomes generic fact
-            "
-        ).unwrap();
+	#[test]
+	fn fact_vs_generic_fact_buckets() {
+	    let kb = build(
+	        "p(a,b).
+	         p(X,Y).        % generic fact (variables, no body)
+	         q(a).          % ground fact
+	         r(X) :- .      % empty body rule becomes generic fact
+	        "
+	    ).unwrap();
 
-        let (p_pid, _) = kb.inter.get_pred_if_known(&"p".into()).unwrap();
-        let (q_pid, _) = kb.inter.get_pred_if_known(&"q".into()).unwrap();
-        let (r_pid, _) = kb.inter.get_pred_if_known(&"r".into()).unwrap();
+	    let (p_pid, _) = kb.inter.get_pred_if_known(&"p".into()).unwrap();
+	    let (q_pid, _) = kb.inter.get_pred_if_known(&"q".into()).unwrap();
+	    let (r_pid, _) = kb.inter.get_pred_if_known(&"r".into()).unwrap();
 
-        // p/2: both one ground and one generic
-        assert!(kb.producers_ground.get(&p_pid).unwrap().len() == 1);
-        assert!(kb.producers_generic.get(&p_pid).unwrap().len() == 1);
+	    // p/2: both one ground and one generic
+	    let p_prod = kb.producers.get(&p_pid).expect("p producers exist");
+	    assert_eq!(p_prod.ground.len(),  1);
+	    assert_eq!(p_prod.generic.len(), 1);
+	    assert_eq!(p_prod.rules.len(),   0);
 
-        // q/1: only ground
-        assert!(kb.producers_ground.get(&q_pid).unwrap().len() == 1);
-        assert!(kb.producers_generic.get(&q_pid).is_none());
+	    // q/1: only ground
+	    let q_prod = kb.producers.get(&q_pid).expect("q producers exist");
+	    assert_eq!(q_prod.ground.len(),  1);
+	    assert_eq!(q_prod.generic.len(), 0);
+	    assert_eq!(q_prod.rules.len(),   0);
 
-        // r/1: came from an empty-body rule -> generic fact
-        assert!(kb.producers_generic.get(&r_pid).unwrap().len() == 1);
-        assert!(kb.producers_rules.get(&r_pid).is_none());
-    }
+	    // r/1: came from an empty-body rule -> generic fact
+	    let r_prod = kb.producers.get(&r_pid).expect("r producers exist");
+	    assert_eq!(r_prod.generic.len(), 1);
+	    assert_eq!(r_prod.ground.len(),  0);
+	    assert_eq!(r_prod.rules.len(),   0);
+	}
+
 
     #[test]
     fn query_checks_dont_add_info() {
