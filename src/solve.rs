@@ -11,19 +11,67 @@ use crate::parser::{Atom as RawAtom, Rule as RawRule, Statement, Term as RawTerm
 pub struct PredId(NonZeroU32);
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
 pub struct ConstId(NonZeroU32);
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct VarId(NonZeroU32); // per clause
 
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
-pub enum TermId {
-    Var(VarId),
-    Const(ConstId),
+// ---- Compact term representation ----
+// Vars:  0,1,2,...  (clause-local index, 0-based)
+// Const: -id         (id is NonZeroU32, so negative never overlaps vars)
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
+pub struct Term32(pub i32);
+
+impl Term32 {
+    #[inline] pub const fn var(ix0: u32) -> Self { Self(ix0 as i32) }
+    #[inline] pub const fn from_const(cid: ConstId) -> Self { Self(-(cid.0.get() as i32)) }
+
+    #[inline] pub const fn is_var(self) -> bool { self.0 >= 0 }
+    #[inline] pub const fn is_const(self) -> bool { self.0 < 0 }
+
+    // Infallible getters with debug checks
+    #[inline] pub fn var_index(self) -> u32 {
+        debug_assert!(self.is_var(), "Term32::var_index called on non-var: {:?}", self);
+        self.0 as u32
+    }
+    #[inline] pub fn const_id(self) -> ConstId {
+        debug_assert!(self.is_const(), "Term32::const_id called on non-const: {:?}", self);
+        let raw = (-self.0) as u32;
+        debug_assert!(raw >= 1, "encoded const id must be >= 1");
+        // safe: we just asserted raw >= 1
+        unsafe { ConstId(NonZeroU32::new_unchecked(raw)) }
+    }
 }
 
+// Public ergonomic view (optional, handy for APIs)
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub enum Term {
+    Var(u32),       // 0-based
+    Const(ConstId), // interned
+}
+
+impl From<Term> for Term32 {
+    #[inline]
+    fn from(t: Term) -> Self {
+        match t {
+            Term::Var(ix) => Term32::var(ix),
+            Term::Const(c) => Term32::from_const(c),
+        }
+    }
+}
+
+impl From<Term32> for Term {
+    #[inline]
+    fn from(t: Term32) -> Self {
+        if t.is_var() {
+            Term::Var(t.var_index())
+        } else {
+            Term::Const(t.const_id())
+        }
+    }
+}
+
+// ---- Canonicalized structures ----
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub struct AtomId {
     pub pred: PredId,
-    pub args: Box<[TermId]>, // immutable, arity is fixed
+    pub args: Box<[Term32]>, // immutable, arity is fixed
 }
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
@@ -51,11 +99,8 @@ impl Interner {
         if let Some(&id) = self.pred_map.get(name) {
             let ix = (id.0.get() - 1) as usize;
             let a = self.pred_arity[ix];
-            if a == arity {
-                Ok(id)
-            } else {
-                Err(KBError::WrongArity { predicate: self.pred_names[ix].clone(), expected: a, found: arity })
-            }
+            if a == arity { Ok(id) }
+            else { Err(KBError::WrongArity { predicate: self.pred_names[ix].clone(), expected: a, found: arity }) }
         } else {
             let id = PredId(Self::nz(self.pred_names.len() as u32 + 1));
             self.pred_names.push(name.clone());
@@ -88,29 +133,21 @@ impl Interner {
     pub fn pred_arity_of(&self, id: PredId) -> u32 { self.pred_arity[(id.0.get() - 1) as usize] }
 }
 
-// ---- Clause-local variable scope (alpha-renaming) ----
+// ---- Clause-local variable scope (alpha-renaming -> 0-based ints) ----
 struct VarScope {
-    map: HashMap<Box<str>, VarId>,
-    next: u32,
+    map: HashMap<Box<str>, u32>, // var name -> 0-based index
+    next: u32,                   // next index to assign (also the size)
 }
 impl VarScope {
     fn new() -> Self { Self { map: HashMap::new(), next: 0 } }
-    #[inline] fn fresh(&mut self) -> VarId {
-        self.next += 1;
-        VarId(NonZeroU32::new(self.next).unwrap())
-    }
-    fn get(&mut self, v: &Box<str>) -> VarId {
+    #[inline] fn fresh_ix(&mut self) -> u32 { let ix = self.next; self.next += 1; ix }
+    fn get_ix(&mut self, v: &Box<str>) -> u32 {
         match self.map.entry(v.clone()) {
             Entry::Occupied(o) => *o.get(),
-            Entry::Vacant(vac) => {
-                self.next += 1;
-                let id = VarId(NonZeroU32::new(self.next).unwrap());
-                vac.insert(id);
-                id
-            }
+            Entry::Vacant(vac) => { let ix = self.next; self.next += 1; vac.insert(ix); ix }
         }
     }
-    fn anon(&mut self) -> VarId { self.fresh() }
+    fn anon_ix(&mut self) -> u32 { self.fresh_ix() }
 }
 
 // ---- Errors (Box<str>, no String) ----
@@ -146,9 +183,9 @@ pub struct Producers {
     pub generic: Vec<AtomId>,
 }
 impl Producers {
-    fn push_rule(&mut self, r: RuleId)   { self.rules.push(r); }
-    fn push_ground(&mut self, a: AtomId) { self.ground.push(a); }
-    fn push_generic(&mut self, a: AtomId){ self.generic.push(a); }
+    #[inline] fn push_rule(&mut self, r: RuleId)   { self.rules.push(r); }
+    #[inline] fn push_ground(&mut self, a: AtomId) { self.ground.push(a); }
+    #[inline] fn push_generic(&mut self, a: AtomId){ self.generic.push(a); }
 }
 
 // ---- KB (single owner) ----
@@ -187,17 +224,21 @@ impl KB {
     // ----- atoms -----
     fn canon_atom(&mut self, a: &RawAtom, vs: &mut VarScope) -> Result<AtomId, KBError> {
         let pred = self.inter.intern_pred_with_arity(&a.predicate, a.args.len() as u32)?;
-        let args = a.args.iter().map(|t| match t {
-            RawTerm::Variable(v) if v.as_ref() == "_" => TermId::Var(vs.anon()),
-            RawTerm::Variable(v) => TermId::Var(vs.get(v)),
-            RawTerm::Constant(c) => TermId::Const(self.inter.intern_const(c)),
-        }).collect::<Vec<_>>().into_boxed_slice();
-        Ok(AtomId { pred, args })
+        let mut args_vec: Vec<Term32> = Vec::with_capacity(a.args.len());
+        for t in &a.args {
+            let enc = match t {
+                RawTerm::Variable(v) if v.as_ref() == "_" => Term32::var(vs.anon_ix()),
+                RawTerm::Variable(v) => Term32::var(vs.get_ix(v)),
+                RawTerm::Constant(c) => Term32::from_const(self.inter.intern_const(c)),
+            };
+            args_vec.push(enc);
+        }
+        Ok(AtomId { pred, args: args_vec.into_boxed_slice() })
     }
 
     #[inline]
     fn is_ground_atom(a: &AtomId) -> bool {
-        a.args.iter().all(|t| matches!(t, TermId::Const(_)))
+        a.args.iter().all(|&t| t.is_const())
     }
 
     // Parser `Fact(_)` may contain variables → treat as generic fact.
@@ -235,10 +276,15 @@ impl KB {
         }
 
         // range-restriction: each head var must appear in body
-        for (i, t) in head.args.iter().enumerate() {
-            if let TermId::Var(vh) = t {
-                let found = body_vec.iter().any(|b|
-                    b.args.iter().any(|bt| matches!(bt, TermId::Var(vb) if vb == vh)));
+        for (i, &t) in head.args.iter().enumerate() {
+            if t.is_var() {
+                let vh = t;
+                let mut found = false;
+                'outer: for b in &body_vec {
+                    for &bt in b.args.iter() {
+                        if bt == vh { found = true; break 'outer; }
+                    }
+                }
                 if !found {
                     return Err(KBError::HeadVarNotBound { predicate: r.head.predicate.clone(), arg_idx: i });
                 }
@@ -273,6 +319,7 @@ impl KB {
         Ok(())
     }
 }
+
 
 
 // ---- Tests for KB layer ----
