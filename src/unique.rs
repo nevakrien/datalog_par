@@ -1,3 +1,4 @@
+use hashbrown::HashMap;
 use std::hash::Hash;
 use std::sync::RwLock;
 use hashbrown::HashSet;
@@ -74,27 +75,74 @@ impl<T:Eq+Hash+Clone> Registery<T>{
 		self.alloc(x).into()
 	}
 
-
-
 	pub fn alloc<'b>(&self,x:&'b [T]) -> &[T]{
 		if let Some(temp) = self.0.read().unwrap().get(x){
 			return unsafe{
-				core::slice::from_raw_parts(temp.as_ptr(),temp.len())
+				&*(&**temp as *const [T])
 			}
 		}
 
-		let mut binding = self.0.write().unwrap();
-
-  		let temp  = binding.get_or_insert_with(x, |x| {
-			x.into()
-		});
+		let b = x.into();
+		let mut lock = self.0.write().unwrap();
+  		let temp  = lock.get_or_insert(b);
 
 
 		unsafe{
-			core::slice::from_raw_parts(temp.as_ptr(),temp.len())
+			&*(&**temp as *const [T])
 		}
 	}
 }
+
+pub struct Store<K,V:?Sized>(RwLock<HashMap<K,Box<V>>>);
+impl<K,V> Default for Store<K,V>{
+fn default() -> Self { Self(RwLock::new(HashMap::new()))}
+}
+
+impl<K:Hash+Eq+Clone, V> Store<K, V>{
+	pub fn new() -> Self{
+		Self::default()
+	}
+
+	pub fn get_or_default<'b>(&self, k: &'b K) ->&V where V:Default{
+		self.get_or(k,V::default)
+	}
+
+	//gets a value or inilizes with f.
+	//WARNING!!!: to avoid contention we might inilize the value more than once
+	//if this isnt desirble use get_or_once
+	pub fn get_or<'b>(&self, k: &'b K,f:impl FnOnce()->V) ->&V{
+    	if let Some(b) = self.0.read().unwrap().get(k){
+    		return unsafe{
+    			&*(&**b as *const V)
+    		}
+    	}
+		
+		let k = k.clone();
+		let b :Box<V>= Box::new(f());    	
+    	let mut lock = self.0.write().unwrap();
+    	let temp = lock.entry(k).or_insert(b);
+    	unsafe{
+			&*(&**temp as *const V)
+		}
+    }
+
+    pub fn get_or_once<'b>(&self, k: &'b K,f:impl FnOnce()->V) ->&V{
+    	if let Some(b) = self.0.read().unwrap().get(k){
+    		return unsafe{
+    			&*(&**b as *const V)
+    		}
+    	}
+		
+    	let mut lock = self.0.write().unwrap();		
+		let k = k.clone();
+		let b :Box<V>= Box::new(f());    	
+    	let temp = lock.entry(k).or_insert(b);
+    	unsafe{
+			&*(&**temp as *const V)
+		}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,3 +327,55 @@ mod tests {
         assert_eq!(addr, result2.as_ptr() as usize);
     }
 }
+
+#[cfg(test)]
+mod test_store {
+    use std::sync::Barrier;
+    use std::sync::atomic::AtomicUsize;
+    use std::thread;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use super::*;
+
+    struct TestData {
+        counter: AtomicUsize,
+        #[allow(dead_code)]
+        data: Box<[u8; 3]>,
+    }
+
+    impl Default for TestData {
+        fn default() -> Self { 
+            Self {
+                counter: 0.into(),
+                data: Box::new([0; 3])
+            } 
+        }
+    }
+
+    #[test]
+    fn test_concurrent_double_insertion() {
+        let store = Arc::new(Store::<i32, TestData>::new());
+        let barrier = Arc::new(Barrier::new(16));
+        let key = 42;
+        
+        let handles: Vec<_> = (0..32)
+            .map(|_| {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    let data_ref = store.get_or_default(&key);
+                    data_ref.counter.fetch_add(1, Ordering::SeqCst)
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        
+        let final_ref = store.get_or_default(&key);
+        assert_eq!(final_ref.counter.load(Ordering::SeqCst), 32);
+    }
+}
+

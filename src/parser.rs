@@ -1,5 +1,7 @@
 //made by claude4
 use std::fmt;
+use std::str::Chars;
+use std::iter::Peekable;
 
 #[derive(Debug, Clone, PartialEq,Eq,Hash)]
 pub enum Term {
@@ -43,78 +45,99 @@ impl fmt::Display for ParseError {
     }
 }
 
-pub struct DatalogParser {
-    tokens: Vec<Box<str>>,
-    position: usize,
+pub struct DatalogParser<'a> {
+    chars: Peekable<Chars<'a>>,
+    current_token: Option<String>,
 }
 
-impl DatalogParser {
-    pub fn new(input: &str) -> Self {
-        let tokens = Self::tokenize(input);
-        DatalogParser { tokens, position: 0 }
+impl<'a> DatalogParser<'a> {
+    pub fn new(input: &'a str) -> Self {
+        let mut parser = DatalogParser {
+            chars: input.chars().peekable(),
+            current_token: None,
+        };
+        parser.advance_token(); // Initialize with first token
+        parser
     }
 
-    fn tokenize(input: &str) -> Vec<Box<str>> {
-        let mut tokens = Vec::new();
-        let mut current_token = std::string::String::new();
-        let mut chars = input.chars().peekable();
+    fn advance_token(&mut self) {
+        self.current_token = self.next_token();
+    }
 
-        while let Some(ch) = chars.next() {
-            match ch {
-                ' ' | '\t' | '\n' | '\r' => {
-                    if !current_token.is_empty() {
-                        tokens.push(current_token.clone().into());
-                        current_token.clear();
-                    }
-                }
-                '(' | ')' | ',' | '.' => {
-                    if !current_token.is_empty() {
-                        tokens.push(current_token.clone().into());
-                        current_token.clear();
-                    }
-                    tokens.push(ch.to_string().into());
-                }
-                ':' => {
-                    if chars.peek() == Some(&'-') {
-                        chars.next(); // consume '-'
-                        if !current_token.is_empty() {
-                            tokens.push(current_token.as_str().into());
-                            current_token.clear();
-                        }
-                        tokens.push(":-".into());
-                    } else {
-                        current_token.push(ch);
-                    }
-                }
-                '?' => {
-                    if chars.peek() == Some(&'-') {
-                        chars.next(); // consume '-'
-                        if !current_token.is_empty() {
-                            tokens.push(current_token.as_str().into());
-                            current_token.clear();
-                        }
-                        tokens.push("?-".into());
-                    } else {
-                        current_token.push(ch);
-                    }
-                }
-                _ => current_token.push(ch),
+    fn next_token(&mut self) -> Option<String> {
+        // Skip whitespace
+        while let Some(&ch) = self.chars.peek() {
+            if ch.is_whitespace() {
+                self.chars.next();
+            } else {
+                break;
             }
         }
 
-        if !current_token.is_empty() {
-            tokens.push(current_token.into());
-        }
+        // Check if we're at end of input
+        let first_char = self.chars.next()?;
 
-        tokens
+        match first_char {
+            '(' | ')' | ',' | '.' => Some(first_char.to_string()),
+            ':' => {
+                if self.chars.peek() == Some(&'-') {
+                    self.chars.next(); // consume '-'
+                    Some(":-".to_string())
+                } else {
+                    // ':' is part of an identifier, collect the full token
+                    let mut token = String::new();
+                    token.push(':');
+                    self.collect_identifier_chars(&mut token)
+                }
+            }
+            '?' => {
+                if self.chars.peek() == Some(&'-') {
+                    self.chars.next(); // consume '-'
+                    Some("?-".to_string())
+                } else {
+                    // '?' is part of an identifier, collect the full token
+                    let mut token = String::new();
+                    token.push('?');
+                    self.collect_identifier_chars(&mut token)
+                }
+            }
+            _ => {
+                let mut token = String::new();
+                token.push(first_char);
+                self.collect_identifier_chars(&mut token)
+            }
+        }
+    }
+
+    fn collect_identifier_chars(&mut self, token: &mut String) -> Option<String> {
+        while let Some(&ch) = self.chars.peek() {
+            match ch {
+                ' ' | '\t' | '\n' | '\r' | '(' | ')' | ',' | '.' => break,
+                ':' | '?' => {
+                    // Check if this starts a special token
+                    if let Some(&next_ch) = self.chars.peek() {
+                        if next_ch == '-' {
+                            break; // Let the next call handle :- or ?-
+                        }
+                    }
+                    token.push(ch);
+                    self.chars.next();
+                }
+                _ => {
+                    token.push(ch);
+                    self.chars.next();
+                }
+            }
+        }
+        Some(token.clone())
     }
 
     fn current_token(&self) -> Option<&str> {
-        self.tokens.get(self.position).map(|s| s.as_ref())
+        self.current_token.as_deref()
     }
 
     fn advance(&mut self) -> Option<&str> {
-        self.position += 1;
+        self.advance_token();
         self.current_token()
     }
 
@@ -186,7 +209,7 @@ impl DatalogParser {
     }
 
     pub fn parse_statement(&mut self) -> Result<Option<Statement>, ParseError> {
-        if self.position >= self.tokens.len() {
+        if self.current_token().is_none() {
             return Ok(None);
         }
 
@@ -246,6 +269,8 @@ impl DatalogParser {
     }
 }
 
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +304,7 @@ mod tests {
                 assert_eq!(rule.head.args[0], Term::Variable("X".into()));
                 assert_eq!(rule.head.args[1], Term::Variable("Z".into()));
                 assert_eq!(rule.body.len(), 2);
+                assert_eq!(rule.body[0].predicate.as_ref(), "parent");
             }
             _ => panic!("Expected rule"),
         }
