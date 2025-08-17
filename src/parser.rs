@@ -704,23 +704,26 @@ impl Interner {
 // ---- Clause-local variable scope (alpha-renaming -> 0-based ints) ----
 struct VarScope {
     map: HashMap<Box<str>, u32>, // var name -> 0-based index
+    names:Vec<Box<str>>,
     next: u32,                   // next index to assign (also the size)
 }
 impl VarScope {
     fn new() -> Self {
         Self {
             map: HashMap::new(),
+            names: Vec::new(),
             next: 0,
         }
     }
     #[inline]
-    fn get_ix(&mut self, v: &Box<str>) -> u32 {
-        match self.map.entry(v.clone()) {
+    fn get_ix(&mut self, v: &str) -> u32 {
+        match self.map.entry(v.into()) {
             Entry::Occupied(o) => *o.get(),
             Entry::Vacant(vac) => {
                 let ix = self.next;
                 self.next += 1;
                 vac.insert(ix);
+                self.names.push(v.into());
                 ix
             }
         }
@@ -741,8 +744,12 @@ pub enum KBError {
         expected: u32,
         found: u32,
     },
+    UnboundVar {
+        var: Box<str>,
+    },
     HeadVarNotBound {
         predicate: Box<str>,
+        arg: Box<str>,
         arg_idx: usize,
     },
     UnknownPredicateInQuery {
@@ -767,10 +774,9 @@ impl fmt::Display for KBError {
                 "Predicate '{}' arity mismatch: expected {}, found {}.",
                 predicate, expected, found
             ),
-            HeadVarNotBound { predicate, arg_idx } => write!(
+            HeadVarNotBound { predicate,arg, arg_idx } => write!(
                 f,
-                "Rule {}(...): head var at position {} not bound in body.",
-                predicate, arg_idx
+                "Rule {predicate}(...): head var '{arg}' at position {arg_idx} not bound in body.", 
             ),
             UnknownPredicateInQuery { predicate } => {
                 write!(f, "Query references unknown predicate '{}'.", predicate)
@@ -783,6 +789,10 @@ impl fmt::Display for KBError {
                 "Query on '{}' uses unknown constant '{}'.",
                 predicate, constant
             ),
+            KBError::UnboundVar { var } =>  write!(
+                f,
+                "Unbound Variable '{var}'"
+            ),
         }
     }
 }
@@ -791,8 +801,7 @@ impl fmt::Display for KBError {
 #[derive(Default, Clone)]
 pub struct Producers {
     pub rules: Vec<RuleId>,
-    pub ground: Vec<AtomId>,
-    pub generic: Vec<AtomId>,
+    pub facts: Vec<AtomId>,
 }
 impl Producers {
     #[inline]
@@ -800,12 +809,8 @@ impl Producers {
         self.rules.push(r);
     }
     #[inline]
-    fn push_ground(&mut self, a: AtomId) {
-        self.ground.push(a);
-    }
-    #[inline]
-    fn push_generic(&mut self, a: AtomId) {
-        self.generic.push(a);
+    fn push_fact(&mut self, a: AtomId) {
+        self.facts.push(a);
     }
 }
 
@@ -815,8 +820,7 @@ pub struct KB {
     pub(crate) inter: Interner,
 
     // facts
-    pub(crate) ground_facts: HashSet<AtomId>,
-    pub(crate) generic_facts: HashSet<AtomId>,
+    pub(crate) facts: HashSet<AtomId>,
 
     // rules (dedup set)
     pub(crate) rules: HashSet<RuleId>,
@@ -876,24 +880,27 @@ impl KB {
         })
     }
 
-    #[inline]
-    fn is_ground_atom(a: &AtomId) -> bool {
-        a.args.iter().all(|&t| t.is_const())
-    }
+    // #[inline]
+    // fn is_ground_atom(a: &AtomId) -> bool {
+    //     a.args.iter().all(|&t| t.is_const())
+    // }
 
     // Parser `Fact(_)` may contain variables → treat as generic fact.
     fn add_fact_or_generic(&mut self, a: &Atom) -> Result<(), KBError> {
         let mut vs = VarScope::new();
         let aid = self.canon_atom(a, &mut vs)?;
 
-        if Self::is_ground_atom(&aid) {
-            if self.ground_facts.insert(aid.clone()) {
-                self.producers_mut(aid.pred).push_ground(aid);
+        for t in &aid.args {
+            match t.term(){
+                TermId::Var(i) => {
+                    return Err(KBError::UnboundVar{var:vs.names[i as usize].clone()})
+                },
+                _=>{}
             }
-        } else {
-            if self.generic_facts.insert(aid.clone()) {
-                self.producers_mut(aid.pred).push_generic(aid);
-            }
+        }
+
+        if self.facts.insert(aid.clone()) {
+            self.producers_mut(aid.pred).push_fact(aid);
         }
         Ok(())
     }
@@ -932,6 +939,7 @@ impl KB {
                     return Err(KBError::HeadVarNotBound {
                         predicate: r.head.predicate.clone(),
                         arg_idx: i,
+                        arg:vs.names[t.var_index() as usize].clone()
                     });
                 }
             }
@@ -1050,43 +1058,8 @@ mod tests_kb {
         // producers split:
         let (pid, _) = kb.inter.get_pred_if_known(&"ancestor".into()).unwrap();
         let prod = kb.producers.get(&pid).expect("ancestor producers exist");
-        assert_eq!(prod.ground.len(), 0, "no ground facts for ancestor");
-        assert_eq!(prod.generic.len(), 0, "no generic facts for ancestor");
+        assert_eq!(prod.facts.len(), 0, "no facts for ancestor");
         assert_eq!(prod.rules.len(), 2, "two distinct ancestor rules");
-    }
-
-    #[test]
-    fn fact_vs_generic_fact_buckets() {
-        let kb = build(
-            "p(a,b).
-             p(X,Y).        % generic fact (variables, no body)
-             q(a).          % ground fact
-             r(X) :- .      % empty body rule becomes generic fact
-            ",
-        )
-        .unwrap();
-
-        let (p_pid, _) = kb.inter.get_pred_if_known(&"p".into()).unwrap();
-        let (q_pid, _) = kb.inter.get_pred_if_known(&"q".into()).unwrap();
-        let (r_pid, _) = kb.inter.get_pred_if_known(&"r".into()).unwrap();
-
-        // p/2: both one ground and one generic
-        let p_prod = kb.producers.get(&p_pid).expect("p producers exist");
-        assert_eq!(p_prod.ground.len(), 1);
-        assert_eq!(p_prod.generic.len(), 1);
-        assert_eq!(p_prod.rules.len(), 0);
-
-        // q/1: only ground
-        let q_prod = kb.producers.get(&q_pid).expect("q producers exist");
-        assert_eq!(q_prod.ground.len(), 1);
-        assert_eq!(q_prod.generic.len(), 0);
-        assert_eq!(q_prod.rules.len(), 0);
-
-        // r/1: came from an empty-body rule -> generic fact
-        let r_prod = kb.producers.get(&r_pid).expect("r producers exist");
-        assert_eq!(r_prod.generic.len(), 1);
-        assert_eq!(r_prod.ground.len(), 0);
-        assert_eq!(r_prod.rules.len(), 0);
     }
 
     #[test]
@@ -1125,7 +1098,7 @@ mod tests_kb {
         let stmts = p.parse_all().unwrap();
         let mut b = KB::new();
         match b.add_statement(&stmts[0]) {
-            Err(KBError::HeadVarNotBound { predicate, arg_idx }) => {
+            Err(KBError::HeadVarNotBound { predicate, arg_idx,arg: _ }) => {
                 assert_eq!(predicate.as_ref(), "s");
                 assert_eq!(arg_idx, 0);
             }
