@@ -5,27 +5,17 @@
  * it is probably also a good idea to put some extra work to grammar rewrting
  */
 
+use crate::compile::QueryInfo;
 use std::ops::DerefMut;
 use std::cell::UnsafeCell;
 use std::ops::Deref;
-use crate::compile::RuleId;
-use crate::compile::{AtomId, ConstId, KB, PredId};
+use crate::parser::RuleId;
+use crate::parser::{ConstId, KB, PredId};
 use rayon::prelude::*;
 use hashbrown::{HashMap, HashSet};
 use std::hash::Hash;
 
-pub struct QueryInfo<'kb> {
-    pub(crate) query: AtomId,
-    pub(crate) preds: Box<[PredId]>,
-    pub(crate) kb: &'kb KB,
-}
 
-impl<'a> QueryInfo<'a> {
-    pub fn new(query: AtomId, kb: &'a KB) -> Self {
-        let preds = kb.trace_pred(query.pred).into_iter().collect();
-        Self { query, preds, kb }
-    }
-}
 
 ///this is considered a T for safe code but its actualy UnsafeCell 
 #[repr(transparent)]
@@ -133,7 +123,7 @@ fn run_iteration_rule(rule: &RuleId, info: &KB, data: &QueryData) -> HashSet<Gro
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZero;
+    // use std::num::NonZero;
 use super::*;
     use std::num::NonZeroU32;
 
@@ -179,10 +169,10 @@ use super::*;
     // fn stress_test_rotate() {
 
     //     // pick some fake preds
-    //     let preds: Vec<PredId> = (1..16).map(|i| PredId(NonZero::new(i).unwrap())).collect();
+    //     let preds: Vec<PredId> = (1..16).map(|i| PredId(NonZeroU32::new(i).unwrap())).collect();
     //     let mut qd = QueryData::new(&preds);
 
-    //     for _ in 0..50 {
+    //     for j in 1..50 {
     //         // build a new_delta with large random sets
     //         let mut new_delta: AnsSet = HashMap::new();
 
@@ -192,8 +182,8 @@ use super::*;
     //             for i in 1..10000 {
     //                 let len = i%5;
     //                 let mut g = Vec::with_capacity(len);
-    //                 for _ in 0..len {
-    //                     g.push(ConstId(NonZero::new(i as u32).unwrap()));
+    //                 for k in 0..len {
+    //                     g.push(ConstId(NonZeroU32::new((1+i*j*k) as u32).unwrap()));
     //                 }
     //                 hs.insert(g.into_boxed_slice());
     //             }

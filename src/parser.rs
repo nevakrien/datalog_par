@@ -478,3 +478,736 @@ mod tests {
         }
     }
 }
+
+// ================== kb builder / deduper ==================
+use std::cmp::Ordering;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
+use std::num::NonZeroU32;
+
+
+// ---- Non-zero IDs (separate namespaces) ----
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
+pub struct PredId(pub (crate) NonZeroU32);
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
+pub struct ConstId(pub (crate) NonZeroU32);
+
+// ---- Compact term representation ----
+// Vars:  0,1,2,...  (clause-local index, 0-based)
+// Const: -id         (id is NonZeroU32, so negative never overlaps vars)
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
+pub struct Term32(pub i32);
+
+impl Term32 {
+    #[inline]
+    pub const fn var(ix0: u32) -> Self {
+        Self(ix0 as i32)
+    }
+    #[inline]
+    pub const fn from_const(cid: ConstId) -> Self {
+        Self(-(cid.0.get() as i32))
+    }
+
+    #[inline]
+    pub const fn is_var(self) -> bool {
+        self.0 >= 0
+    }
+    #[inline]
+    pub const fn is_const(self) -> bool {
+        self.0 < 0
+    }
+
+    #[inline]
+    pub const fn var_index(self) -> u32 {
+        debug_assert!(self.is_var(), "var_index on non-var");
+        self.0 as u32
+    }
+    #[inline]
+    pub const fn const_id(self) -> ConstId {
+        debug_assert!(self.is_const(), "const_id on non-const");
+        let raw = (-self.0) as u32;
+        assert!(raw >= 1, "encoded const id must be >= 1");
+        unsafe { ConstId(NonZeroU32::new_unchecked(raw)) }
+    }
+
+    #[inline]
+    pub const unsafe fn const_id_unchecked(self) -> ConstId {
+        debug_assert!(self.is_const(), "const_id on non-const");
+        let raw = (-self.0) as u32;
+        debug_assert!(raw >= 1, "encoded const id must be >= 1");
+        unsafe { ConstId(NonZeroU32::new_unchecked(raw)) }
+    }
+
+    #[inline]
+    pub const fn term(self) -> TermId {
+        if self.is_var() {
+            TermId::Var(self.var_index())
+        } else {
+            unsafe { TermId::Const(self.const_id_unchecked()) }
+        }
+    }
+}
+
+// Public ergonomic view (optional)
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub enum TermId {
+    Var(u32),       // 0-based
+    Const(ConstId), // interned
+}
+impl From<TermId> for Term32 {
+    #[inline]
+    fn from(t: TermId) -> Self {
+        match t {
+            TermId::Var(ix) => Term32::var(ix),
+            TermId::Const(c) => Term32::from_const(c),
+        }
+    }
+}
+impl From<Term32> for TermId {
+    #[inline]
+    fn from(t: Term32) -> Self {
+        t.term()
+    }
+}
+
+// ---- Canonicalized structures ----
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+pub struct AtomId {
+    pub pred: PredId,
+    pub args: Box<[Term32]>, // immutable, arity is fixed
+}
+
+impl AtomId {
+    #[inline]
+    fn bigest_var(&self) -> i32 {
+        self.args.iter().map(|i| i.0).max().unwrap_or(i32::MIN)
+    }
+
+    // fn var_count(&self) -> usize{
+    //  let ans = self.bigest_var();
+    //  if ans < 0 {
+    //      0
+    //  }else{
+    //      ans as usize +1
+    //  }
+    // }
+}
+
+// Total order for canonical sorting/dedup in rule bodies
+impl Ord for AtomId {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // 1) fewest vars first (least general first)
+        match self.bigest_var().cmp(&other.bigest_var()) {
+            Ordering::Equal => {
+                // 2) by predicate id
+                match self.pred.cmp(&other.pred) {
+                    Ordering::Equal => {
+                        // 3) lexicographic by args (raw i32)
+                        self.args.as_ref().cmp(other.args.as_ref())
+                    }
+                    o => o,
+                }
+            }
+            o => o,
+        }
+    }
+}
+impl PartialOrd for AtomId {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+pub struct RuleId {
+    pub head: AtomId,
+    pub body: Box<[AtomId]>, // immutable, CANONICALLY SORTED (see add_rule)
+}
+
+// ---- Interner for predicates (with arity) and constants ----
+#[derive(Default)]
+pub struct Interner {
+    pred_map: HashMap<Box<str>, PredId>,
+    pred_names: Vec<Box<str>>,
+    pred_arity: Vec<u32>, // fixed at first sight
+
+    const_map: HashMap<Box<str>, ConstId>,
+    const_names: Vec<Box<str>>,
+}
+
+impl Interner {
+    #[inline]
+    fn nz(n: u32) -> NonZeroU32 {
+        NonZeroU32::new(n).unwrap()
+    }
+
+    pub fn intern_pred_with_arity(
+        &mut self,
+        name: &Box<str>,
+        arity: u32,
+    ) -> Result<PredId, KBError> {
+        if let Some(&id) = self.pred_map.get(name) {
+            let ix = (id.0.get() - 1) as usize;
+            let a = self.pred_arity[ix];
+            if a == arity {
+                Ok(id)
+            } else {
+                Err(KBError::WrongArity {
+                    predicate: self.pred_names[ix].clone(),
+                    expected: a,
+                    found: arity,
+                })
+            }
+        } else {
+            let id = PredId(Self::nz(self.pred_names.len() as u32 + 1));
+            self.pred_names.push(name.clone());
+            self.pred_map
+                .insert(self.pred_names.last().unwrap().clone(), id);
+            self.pred_arity.push(arity);
+            Ok(id)
+        }
+    }
+
+    pub fn get_pred_if_known(&self, name: &Box<str>) -> Option<(PredId, u32)> {
+        let &id = self.pred_map.get(name)?;
+        let ix = (id.0.get() - 1) as usize;
+        Some((id, self.pred_arity[ix]))
+    }
+
+    pub fn intern_const(&mut self, name: &Box<str>) -> ConstId {
+        if let Some(&id) = self.const_map.get(name) {
+            return id;
+        }
+        let id = ConstId(Self::nz(self.const_names.len() as u32 + 1));
+        self.const_names.push(name.clone());
+        self.const_map
+            .insert(self.const_names.last().unwrap().clone(), id);
+        id
+    }
+
+    pub fn get_const_if_known(&self, name: &Box<str>) -> Option<ConstId> {
+        self.const_map.get(name).copied()
+    }
+
+    pub fn pred_name(&self, id: PredId) -> &str {
+        self.pred_names[(id.0.get() - 1) as usize].as_ref()
+    }
+    pub fn const_name(&self, id: ConstId) -> &str {
+        self.const_names[(id.0.get() - 1) as usize].as_ref()
+    }
+    pub fn pred_arity_of(&self, id: PredId) -> u32 {
+        self.pred_arity[(id.0.get() - 1) as usize]
+    }
+}
+
+// ---- Clause-local variable scope (alpha-renaming -> 0-based ints) ----
+struct VarScope {
+    map: HashMap<Box<str>, u32>, // var name -> 0-based index
+    next: u32,                   // next index to assign (also the size)
+}
+impl VarScope {
+    fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+            next: 0,
+        }
+    }
+    #[inline]
+    fn get_ix(&mut self, v: &Box<str>) -> u32 {
+        match self.map.entry(v.clone()) {
+            Entry::Occupied(o) => *o.get(),
+            Entry::Vacant(vac) => {
+                let ix = self.next;
+                self.next += 1;
+                vac.insert(ix);
+                ix
+            }
+        }
+    }
+    #[inline]
+    fn anon_ix(&mut self) -> u32 {
+        let ix = self.next;
+        self.next += 1;
+        ix
+    }
+}
+
+// ---- Errors (Box<str>, no String) ----
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KBError {
+    WrongArity {
+        predicate: Box<str>,
+        expected: u32,
+        found: u32,
+    },
+    HeadVarNotBound {
+        predicate: Box<str>,
+        arg_idx: usize,
+    },
+    UnknownPredicateInQuery {
+        predicate: Box<str>,
+    },
+    UnknownConstantInQuery {
+        predicate: Box<str>,
+        constant: Box<str>,
+    },
+}
+
+impl fmt::Display for KBError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use KBError::*;
+        match self {
+            WrongArity {
+                predicate,
+                expected,
+                found,
+            } => write!(
+                f,
+                "Predicate '{}' arity mismatch: expected {}, found {}.",
+                predicate, expected, found
+            ),
+            HeadVarNotBound { predicate, arg_idx } => write!(
+                f,
+                "Rule {}(...): head var at position {} not bound in body.",
+                predicate, arg_idx
+            ),
+            UnknownPredicateInQuery { predicate } => {
+                write!(f, "Query references unknown predicate '{}'.", predicate)
+            }
+            UnknownConstantInQuery {
+                predicate,
+                constant,
+            } => write!(
+                f,
+                "Query on '{}' uses unknown constant '{}'.",
+                predicate, constant
+            ),
+        }
+    }
+}
+
+// ---- Producers bucket per predicate ----
+#[derive(Default, Clone)]
+pub struct Producers {
+    pub rules: Vec<RuleId>,
+    pub ground: Vec<AtomId>,
+    pub generic: Vec<AtomId>,
+}
+impl Producers {
+    #[inline]
+    fn push_rule(&mut self, r: RuleId) {
+        self.rules.push(r);
+    }
+    #[inline]
+    fn push_ground(&mut self, a: AtomId) {
+        self.ground.push(a);
+    }
+    #[inline]
+    fn push_generic(&mut self, a: AtomId) {
+        self.generic.push(a);
+    }
+}
+
+// ---- KB (single owner) ----
+#[derive(Default)]
+pub struct KB {
+    pub(crate) inter: Interner,
+
+    // facts
+    pub(crate) ground_facts: HashSet<AtomId>,
+    pub(crate) generic_facts: HashSet<AtomId>,
+
+    // rules (dedup set)
+    pub(crate) rules: HashSet<RuleId>,
+
+    // single lookup: pred -> Producers {rules, ground, generic}
+    pub(crate) producers: HashMap<PredId, Producers>,
+}
+
+impl KB {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn interner(&self) -> &Interner {
+        &self.inter
+    }
+
+    pub fn add_statement(&mut self, st: &Statement) -> Result<Option<AtomId>, KBError> {
+        match st {
+            Statement::Fact(a) => {
+                self.add_fact_or_generic(a)?;
+                Ok(None)
+            }
+            Statement::Rule(r) => {
+                self.add_rule(r)?;
+                Ok(None)
+            }
+            Statement::Query(a) => {
+                // Non-mutating: just return the encoded query
+                let enc = self.get_query_encoding(a)?;
+                Ok(Some(enc))
+            }
+        }
+    }
+
+    #[inline]
+    fn producers_mut(&mut self, p: PredId) -> &mut Producers {
+        self.producers.entry(p).or_default()
+    }
+
+    // ----- atoms -----
+    fn canon_atom(&mut self, a: &Atom, vs: &mut VarScope) -> Result<AtomId, KBError> {
+        let pred = self
+            .inter
+            .intern_pred_with_arity(&a.predicate, a.args.len() as u32)?;
+        let mut args_vec: Vec<Term32> = Vec::with_capacity(a.args.len());
+        for t in &a.args {
+            let enc = match t {
+                Term::Variable(v) if v.as_ref() == "_" => Term32::var(vs.anon_ix()),
+                Term::Variable(v) => Term32::var(vs.get_ix(v)),
+                Term::Constant(c) => Term32::from_const(self.inter.intern_const(c)),
+            };
+            args_vec.push(enc);
+        }
+        Ok(AtomId {
+            pred,
+            args: args_vec.into_boxed_slice(),
+        })
+    }
+
+    #[inline]
+    fn is_ground_atom(a: &AtomId) -> bool {
+        a.args.iter().all(|&t| t.is_const())
+    }
+
+    // Parser `Fact(_)` may contain variables → treat as generic fact.
+    fn add_fact_or_generic(&mut self, a: &Atom) -> Result<(), KBError> {
+        let mut vs = VarScope::new();
+        let aid = self.canon_atom(a, &mut vs)?;
+
+        if Self::is_ground_atom(&aid) {
+            if self.ground_facts.insert(aid.clone()) {
+                self.producers_mut(aid.pred).push_ground(aid);
+            }
+        } else {
+            if self.generic_facts.insert(aid.clone()) {
+                self.producers_mut(aid.pred).push_generic(aid);
+            }
+        }
+        Ok(())
+    }
+
+    // Rules must have non-empty body; if body is empty, route to fact/generic.
+    fn add_rule(&mut self, r: &Rule) -> Result<(), KBError> {
+        if r.body.is_empty() {
+            return self.add_fact_or_generic(&r.head);
+        }
+
+        let mut vs = VarScope::new();
+        let head = self.canon_atom(&r.head, &mut vs)?;
+
+        // collect, then canonical sort + dedup; kills permutations & duplicates
+        let mut body_vec: Vec<AtomId> = Vec::with_capacity(r.body.len());
+        for a in &r.body {
+            body_vec.push(self.canon_atom(a, &mut vs)?);
+        }
+        body_vec.sort_unstable(); // uses Ord on AtomId
+        body_vec.dedup(); // adjacent duplicates removed
+
+        // range-restriction: each head var must appear in (deduped, sorted) body
+        for (i, &t) in head.args.iter().enumerate() {
+            if t.is_var() {
+                let vh = t;
+                let mut found = false;
+                'outer: for b in &body_vec {
+                    for &bt in b.args.iter() {
+                        if bt == vh {
+                            found = true;
+                            break 'outer;
+                        }
+                    }
+                }
+                if !found {
+                    return Err(KBError::HeadVarNotBound {
+                        predicate: r.head.predicate.clone(),
+                        arg_idx: i,
+                    });
+                }
+            }
+        }
+
+        let rule = RuleId {
+            head: head.clone(),
+            body: body_vec.into_boxed_slice(),
+        };
+
+        // global O(1) dedupe; only on insert update producers bucket
+        if self.rules.insert(rule.clone()) {
+            self.producers_mut(head.pred).push_rule(rule);
+        }
+        Ok(())
+    }
+
+    /// Queries must not add info: pred+arity must exist, constants must be known.
+    /// Returns the canonical query encoding (variables canonically 0-based).
+    pub fn get_query_encoding(&self, a: &Atom) -> Result<AtomId, KBError> {
+        // predicate must already be known; arity must match
+        let (pred, expect_arity) = self.inter.get_pred_if_known(&a.predicate).ok_or_else(|| {
+            KBError::UnknownPredicateInQuery {
+                predicate: a.predicate.clone(),
+            }
+        })?;
+        let found_arity = a.args.len() as u32;
+        if expect_arity != found_arity {
+            return Err(KBError::WrongArity {
+                predicate: a.predicate.clone(),
+                expected: expect_arity,
+                found: found_arity,
+            });
+        }
+
+        // build clause-local variable numbering; constants must already be interned
+        let mut vs = VarScope::new();
+        let mut args_vec: Vec<Term32> = Vec::with_capacity(a.args.len());
+        for t in &a.args {
+            match t {
+                Term::Variable(v) if v.as_ref() == "_" => {
+                    args_vec.push(Term32::var(vs.anon_ix()));
+                }
+                Term::Variable(v) => {
+                    args_vec.push(Term32::var(vs.get_ix(v)));
+                }
+                Term::Constant(c) => {
+                    if let Some(cid) = self.inter.get_const_if_known(c) {
+                        args_vec.push(Term32::from_const(cid));
+                    } else {
+                        return Err(KBError::UnknownConstantInQuery {
+                            predicate: a.predicate.clone(),
+                            constant: c.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(AtomId {
+            pred,
+            args: args_vec.into_boxed_slice(),
+        })
+    }
+
+    pub fn trace_pred(&self, pred: PredId) -> HashSet<PredId> {
+        let mut ans = HashSet::new();
+        ans.insert(pred);
+
+        let mut stack = Vec::new();
+        stack.push(pred);
+
+        while let Some(id) = stack.pop() {
+            for r in &self.producers[&id].rules {
+                for a in &r.body {
+                    if ans.insert(a.pred) {
+                        stack.push(a.pred);
+                    }
+                }
+            }
+        }
+        ans
+    }
+}
+
+// ---- Tests for KB layer ----
+#[cfg(test)]
+mod tests_kb {
+    use super::*;
+    use crate::parser::DatalogParser;
+
+    fn build(input: &str) -> Result<KB, KBError> {
+        let mut p = DatalogParser::new(input);
+        let stmts = p.parse_all().unwrap();
+        let mut kb = KB::new();
+        for s in &stmts {
+            kb.add_statement(s)?;
+        }
+        Ok(kb)
+    }
+
+    #[test]
+    fn producers_split_and_rule_dedupe() {
+        let kb = build(
+            "parent(tom,bob).
+             parent(bob,alice).
+             ancestor(X,Z) :- parent(X,Z).
+             ancestor(X,Z) :- parent(X,Y), parent(Y,Z).
+             ancestor(A,B) :- parent(A,C), parent(C,B).",
+        )
+        .unwrap();
+
+        // rules deduped by alpha-equivalence: last two are equivalent
+        assert_eq!(kb.rules.len(), 2);
+
+        // producers split:
+        let (pid, _) = kb.inter.get_pred_if_known(&"ancestor".into()).unwrap();
+        let prod = kb.producers.get(&pid).expect("ancestor producers exist");
+        assert_eq!(prod.ground.len(), 0, "no ground facts for ancestor");
+        assert_eq!(prod.generic.len(), 0, "no generic facts for ancestor");
+        assert_eq!(prod.rules.len(), 2, "two distinct ancestor rules");
+    }
+
+    #[test]
+    fn fact_vs_generic_fact_buckets() {
+        let kb = build(
+            "p(a,b).
+             p(X,Y).        % generic fact (variables, no body)
+             q(a).          % ground fact
+             r(X) :- .      % empty body rule becomes generic fact
+            ",
+        )
+        .unwrap();
+
+        let (p_pid, _) = kb.inter.get_pred_if_known(&"p".into()).unwrap();
+        let (q_pid, _) = kb.inter.get_pred_if_known(&"q".into()).unwrap();
+        let (r_pid, _) = kb.inter.get_pred_if_known(&"r".into()).unwrap();
+
+        // p/2: both one ground and one generic
+        let p_prod = kb.producers.get(&p_pid).expect("p producers exist");
+        assert_eq!(p_prod.ground.len(), 1);
+        assert_eq!(p_prod.generic.len(), 1);
+        assert_eq!(p_prod.rules.len(), 0);
+
+        // q/1: only ground
+        let q_prod = kb.producers.get(&q_pid).expect("q producers exist");
+        assert_eq!(q_prod.ground.len(), 1);
+        assert_eq!(q_prod.generic.len(), 0);
+        assert_eq!(q_prod.rules.len(), 0);
+
+        // r/1: came from an empty-body rule -> generic fact
+        let r_prod = kb.producers.get(&r_pid).expect("r producers exist");
+        assert_eq!(r_prod.generic.len(), 1);
+        assert_eq!(r_prod.ground.len(), 0);
+        assert_eq!(r_prod.rules.len(), 0);
+    }
+
+    #[test]
+    fn query_checks_dont_add_info() {
+        // Introduce parent/2 and constants
+        let mut p = DatalogParser::new(
+            "parent(tom,bob).
+             ?- parent(tom,Who).
+             ?- parent(tom,alice).",
+        );
+        let stmts = p.parse_all().unwrap();
+        let mut b = KB::new();
+
+        // ground fact registers pred/arity and constants {tom,bob}
+        b.add_statement(&stmts[0]).unwrap();
+
+        // query with new variable OK
+        b.add_statement(&stmts[1]).unwrap();
+
+        // query with new constant 'alice' should fail
+        match b.add_statement(&stmts[2]) {
+            Err(KBError::UnknownConstantInQuery {
+                predicate,
+                constant,
+            }) => {
+                assert_eq!(predicate.as_ref(), "parent");
+                assert_eq!(constant.as_ref(), "alice");
+            }
+            other => panic!("expected UnknownConstantInQuery, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn head_var_not_bound_errors() {
+        let mut p = DatalogParser::new("s(X) :- t(Y).");
+        let stmts = p.parse_all().unwrap();
+        let mut b = KB::new();
+        match b.add_statement(&stmts[0]) {
+            Err(KBError::HeadVarNotBound { predicate, arg_idx }) => {
+                assert_eq!(predicate.as_ref(), "s");
+                assert_eq!(arg_idx, 0);
+            }
+            other => panic!("expected HeadVarNotBound, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn body_duplicate_atoms_are_removed() {
+        let kb = build("p(X) :- q(X), q(X), q(X).").unwrap();
+        let body = &kb.rules.iter().next().unwrap().body;
+        assert_eq!(body.len(), 1);
+    }
+
+    #[test]
+    fn body_ordering_partitions_ground_before_non_ground_and_dedupes() {
+        use crate::parser::DatalogParser;
+
+        // Mixed body: duplicates + permutation; two clauses that are logically the same
+        let mut p = DatalogParser::new(
+            "p(X) :- s(Y), r(c1), q(X), t(c2), r(c1), q(X).
+             p(U) :- t(c2), q(U), s(V), r(c1).",
+        );
+        let stmts = p.parse_all().unwrap();
+
+        // Build KB
+        let mut kb = super::KB::new();
+        for s in &stmts {
+            kb.add_statement(s).unwrap();
+        }
+
+        // Fetch producers for head predicate p/1
+        let (ppred, _) = kb.inter.get_pred_if_known(&"p".into()).unwrap();
+        let prod = kb.producers.get(&ppred).expect("no producers for p/1");
+
+        // Only ONE canonical rule should remain (permutation & dup collapse)
+        assert_eq!(
+            prod.rules.len(),
+            1,
+            "rules should dedupe by canonical body order"
+        );
+
+        let body = &prod.rules[0].body;
+
+        // We expect these unique atoms in the body: r(c1), t(c2), q(X), s(Y) => 4
+        assert_eq!(body.len(), 4, "body should be deduped to 4 unique atoms");
+
+        // Check the partition: all ground atoms first, then all with variables
+        let mut first_non_ground = body.len();
+        for (i, atom) in body.iter().enumerate() {
+            let is_ground = atom.args.iter().all(|t| t.is_const());
+            if !is_ground {
+                first_non_ground = i;
+                break;
+            }
+        }
+        // If there are any non-ground atoms, ensure everything before is ground
+        for i in 0..first_non_ground {
+            assert!(
+                body[i].args.iter().all(|t| t.is_const()),
+                "expected ground atom before the first non-ground atom at index {}",
+                first_non_ground
+            );
+        }
+        // And everything from that point on is non-ground
+        for i in first_non_ground..body.len() {
+            assert!(
+                body[i].args.iter().any(|t| t.is_var()),
+                "expected non-ground atom at or after the partition index {}",
+                first_non_ground
+            );
+        }
+
+        // Also verify there are no accidental duplicates post-sort/dedup
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for a in body.iter() {
+            assert!(
+                seen.insert(a),
+                "duplicate atom remained after canonicalization: {:?}",
+                a
+            );
+        }
+    }
+}
