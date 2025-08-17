@@ -5,6 +5,8 @@
  * it is probably also a good idea to put some extra work to grammar rewrting
  */
 
+use std::collections::hash_map;
+use std::hash::Hash;
 use crate::compile::RuleId;
 use crate::compile::{AtomId, ConstId, KB, PredId};
 use rayon::prelude::*;
@@ -34,7 +36,13 @@ pub struct QueryData {
 impl QueryData {
     pub fn rotate(&mut self, mut new_delta: AnsSet) {
         std::mem::swap(&mut self.delta, &mut new_delta);
-        self.full.extend(new_delta.into_iter());
+        for (k,mut v) in new_delta.into_iter(){
+        	match self.full.entry(k) {
+        	   hash_map::Entry::Occupied(mut o)=>o.get_mut().extend(v.drain()),
+        	   hash_map::Entry::Vacant(x) => {x.insert(v);},
+        	}
+        }
+        
     }
 }
 
@@ -47,21 +55,40 @@ pub fn run_to_end(info: &QueryInfo, data: &mut QueryData) {
     }
 }
 
+fn merge_sets<T: Eq + Hash>(iter: impl ParallelIterator<Item = HashSet<T>>) -> HashSet<T> {
+    iter.reduce_with(|mut a, mut b| {
+        if a.len() >= b.len() {
+            a.reserve(b.len());
+            a.extend(b.into_iter());
+            a
+        } else {
+            b.reserve(a.len());
+            b.extend(a.into_iter());
+            b
+        }
+    }).unwrap_or_default()
+}
+
+
 fn run_iteration(info: &QueryInfo, data: &QueryData) -> AnsSet {
     info.preds
         .par_iter()
-        .map(|p| {
+        .filter_map(|p| {
             let map = info.kb.producers[p]
                 .rules
                 .par_iter()
-                .flat_map(|r| run_iteration_rule(r, info.kb, data))
-                .collect();
+                .map(|r| run_iteration_rule(r, info.kb, data));
 
-            (*p, map)
+            let table = merge_sets(map);
+            if table.is_empty(){
+            	None
+            }else{
+            	Some((*p, table))
+            }       
         })
         .collect()
 }
 
 fn run_iteration_rule(rule: &RuleId, info: &KB, data: &QueryData) -> HashSet<Group> {
-    todo!()
+     todo!()
 }
