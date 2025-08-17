@@ -9,9 +9,9 @@ use crate::parser::{Atom as RawAtom, Rule as RawRule, Statement, Term as RawTerm
 
 // ---- Non-zero IDs (separate namespaces) ----
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct PredId(NonZeroU32);
+pub struct PredId(pub (crate) NonZeroU32);
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct ConstId(NonZeroU32);
+pub struct ConstId(pub (crate) NonZeroU32);
 
 // ---- Compact term representation ----
 // Vars:  0,1,2,...  (clause-local index, 0-based)
