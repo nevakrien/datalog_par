@@ -5,40 +5,50 @@
  * it is probably also a good idea to put some extra work to grammar rewrting
  */
 
-use crate::compile::SolveAction;
 use crate::compile::QueryInfo;
-use std::ops::DerefMut;
-use std::cell::UnsafeCell;
-use std::ops::Deref;
+use crate::compile::SolveAction;
 use crate::parser::{ConstId, KB, PredId};
-use rayon::prelude::*;
 use hashbrown::{HashMap, HashSet};
+use rayon::prelude::*;
+use std::cell::UnsafeCell;
 use std::hash::Hash;
+use std::ops::Deref;
+use std::ops::DerefMut;
 
-
-
-///this is considered a T for safe code but its actualy UnsafeCell 
+///this is considered a T for safe code but its actualy UnsafeCell
 #[repr(transparent)]
 pub struct Cheat<T>(pub UnsafeCell<T>);
-impl<T> Cheat<T>{
-	pub fn into_inner(self)->T {self.0.into_inner()}
-	pub fn get(&self) -> *mut T {self.0.get()}
-	pub unsafe fn unsafe_mut(&self) -> &mut T {unsafe{&mut*self.0.get()}}
+impl<T> Cheat<T> {
+    pub fn into_inner(self) -> T {
+        self.0.into_inner()
+    }
+    pub fn get(&self) -> *mut T {
+        self.0.get()
+    }
+    pub unsafe fn unsafe_mut(&self) -> &mut T {
+        unsafe { &mut *self.0.get() }
+    }
 }
-impl<T> Deref for Cheat<T>{
-type Target = T;
-fn deref(&self) -> &T { unsafe{&*self.0.get()}}
+impl<T> Deref for Cheat<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        unsafe { &*self.0.get() }
+    }
 }
-impl<T> DerefMut for Cheat<T>{fn deref_mut(&mut self) -> &mut T { self.0.get_mut() }
+impl<T> DerefMut for Cheat<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.0.get_mut()
+    }
 }
 
-unsafe impl<T:Sync> Sync for Cheat<T>{}
-unsafe impl<T:Send> Send for Cheat<T>{}
+unsafe impl<T: Sync> Sync for Cheat<T> {}
+unsafe impl<T: Send> Send for Cheat<T> {}
 
-impl<T> From<T> for Cheat<T>{
-fn from(t: T) -> Self { Self(t.into()) }
+impl<T> From<T> for Cheat<T> {
+    fn from(t: T) -> Self {
+        Self(t.into())
+    }
 }
-
 
 pub type Group = Box<[ConstId]>;
 pub type AnsSet = HashMap<PredId, Cheat<HashSet<Group>>>;
@@ -56,21 +66,21 @@ impl QueryData {
         }
     }
     pub fn rotate(&mut self, mut new_delta: AnsSet) {
-	    std::mem::swap(&mut self.delta, &mut new_delta);
-	    if new_delta.is_empty() { return; }
+        std::mem::swap(&mut self.delta, &mut new_delta);
+        if new_delta.is_empty() {
+            return;
+        }
 
-	    new_delta.into_par_iter().for_each(|(k,mut v)|{
-	     	//this is safe since every value in new_delta is unique
-	     	unsafe{
-	     		self.full.get(&k).unwrap().unsafe_mut().extend(v.drain())
-	     	}
-	    });
-	    // for (k,mut v) in new_delta.into_iter(){
-	    //  	//this is safe since every value in new_delta is unique
-	    //  	unsafe{
-	    //  		self.full.get(&k).unwrap().unsafe_mut().extend(v.drain())
-	    //  	}
-	    // };
+        new_delta.into_par_iter().for_each(|(k, mut v)| {
+            //this is safe since every value in new_delta is unique
+            unsafe { self.full.get(&k).unwrap().unsafe_mut().extend(v.drain()) }
+        });
+        // for (k,mut v) in new_delta.into_iter(){
+        //  	//this is safe since every value in new_delta is unique
+        //  	unsafe{
+        //  		self.full.get(&k).unwrap().unsafe_mut().extend(v.drain())
+        //  	}
+        // };
     }
 }
 
@@ -115,9 +125,9 @@ fn run_iteration(info: &QueryInfo, data: &QueryData) -> AnsSet {
     //         }
     //     })
     //     .collect()
-     info.plans
+    info.plans
         .par_iter()
-        .filter_map(|(p,rules)| {
+        .filter_map(|(p, rules)| {
             let map = rules
                 .par_iter()
                 .map(|r| run_iteration_rule(r, info.kb, data));
@@ -139,24 +149,43 @@ fn run_iteration_rule(rule: &SolveAction, info: &KB, data: &QueryData) -> HashSe
 #[cfg(test)]
 mod tests {
     // use std::num::NonZero;
-use super::*;
+    use super::*;
     use std::num::NonZeroU32;
 
-    fn pid(n: u32) -> PredId { PredId(NonZeroU32::new(n).unwrap()) }
-    fn cid(n: u32) -> ConstId { ConstId(NonZeroU32::new(n).unwrap()) }
-    fn g(xs: &[u32]) -> Group { xs.iter().map(|&x| cid(x)).collect::<Vec<_>>().into_boxed_slice() }
+    fn pid(n: u32) -> PredId {
+        PredId(NonZeroU32::new(n).unwrap())
+    }
+    fn cid(n: u32) -> ConstId {
+        ConstId(NonZeroU32::new(n).unwrap())
+    }
+    fn g(xs: &[u32]) -> Group {
+        xs.iter()
+            .map(|&x| cid(x))
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+    }
 
+    #[test]
+    fn rayon_wroks() {
+        let a: i32 = [1; 300].par_iter().sum();
+        assert_eq!(a, (0..300).map(|_| { 1 }).sum())
+    }
     #[test]
     fn rotate_equals_sequential_union() {
         let preds: Vec<_> = (1..=16).map(pid).collect();
         let mut qd = QueryData::new(&preds);
 
         // seed delta (will be unioned on first rotate)
-        qd.delta = preds.iter().map(|&p| {
-            let mut s = HashSet::new();
-            for j in 2..4 { s.insert(g(&[p.0.get(), j])); }
-            (p, s.into())
-        }).collect();
+        qd.delta = preds
+            .iter()
+            .map(|&p| {
+                let mut s = HashSet::new();
+                for j in 2..4 {
+                    s.insert(g(&[p.0.get(), j]));
+                }
+                (p, s.into())
+            })
+            .collect();
 
         // build expected by sequential union
         let mut expected: HashMap<PredId, HashSet<Group>> = HashMap::new();
@@ -177,7 +206,6 @@ use super::*;
         assert_eq!(got, expected);
         assert!(qd.delta.is_empty());
     }
-
 
     // #[test]
     // #[cfg_attr(miri, ignore)] // don’t run this under Miri

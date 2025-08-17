@@ -485,12 +485,11 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU32;
 
-
 // ---- Non-zero IDs (separate namespaces) ----
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct PredId(pub (crate) NonZeroU32);
+pub struct PredId(pub(crate) NonZeroU32);
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct ConstId(pub (crate) NonZeroU32);
+pub struct ConstId(pub(crate) NonZeroU32);
 
 // ---- Compact term representation ----
 // Vars:  0,1,2,...  (clause-local index, 0-based)
@@ -522,13 +521,6 @@ impl Term32 {
         debug_assert!(self.is_var(), "var_index on non-var");
         self.0 as u32
     }
-    #[inline]
-    pub const fn const_id(self) -> ConstId {
-        debug_assert!(self.is_const(), "const_id on non-const");
-        let raw = (-self.0) as u32;
-        assert!(raw >= 1, "encoded const id must be >= 1");
-        unsafe { ConstId(NonZeroU32::new_unchecked(raw)) }
-    }
 
     #[inline]
     pub const unsafe fn const_id_unchecked(self) -> ConstId {
@@ -544,6 +536,24 @@ impl Term32 {
             TermId::Var(self.var_index())
         } else {
             unsafe { TermId::Const(self.const_id_unchecked()) }
+        }
+    }
+
+    #[inline]
+    pub const fn try_const(self) -> Option<ConstId> {
+        if self.is_var() {
+            None
+        } else {
+            unsafe { Some(self.const_id_unchecked()) }
+        }
+    }
+
+    #[inline]
+    pub const fn try_var(self) -> Option<u32> {
+        if self.is_var() {
+            Some(self.var_index())
+        } else {
+            None
         }
     }
 }
@@ -578,19 +588,27 @@ pub struct AtomId {
 }
 
 impl AtomId {
-    #[inline]
     fn bigest_var(&self) -> i32 {
         self.args.iter().map(|i| i.0).max().unwrap_or(i32::MIN)
     }
 
-    // fn var_count(&self) -> usize{
-    //  let ans = self.bigest_var();
-    //  if ans < 0 {
-    //      0
-    //  }else{
-    //      ans as usize +1
-    //  }
-    // }
+    pub fn var_count(&self) -> usize {
+        let ans = self.bigest_var();
+        if ans < 0 { 0 } else { ans as usize + 1 }
+    }
+
+    pub fn canonize(&mut self) {
+        let Some(m) = self.args.iter().filter_map(|x| x.try_var()).min() else {
+            return;
+        };
+        for x in &mut self.args {
+            if x.is_const() {
+                continue;
+            }
+
+            *x = TermId::Var(x.var_index() - m).into();
+        }
+    }
 }
 
 // Total order for canonical sorting/dedup in rule bodies
@@ -623,6 +641,17 @@ impl PartialOrd for AtomId {
 pub struct RuleId {
     pub head: AtomId,
     pub body: Box<[AtomId]>, // immutable, CANONICALLY SORTED (see add_rule)
+}
+
+impl RuleId {
+    pub fn var_count(&self) -> usize {
+        self.body
+            .iter()
+            .chain(Some(&self.head))
+            .map(|a| a.var_count())
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 // ---- Interner for predicates (with arity) and constants ----
@@ -704,8 +733,8 @@ impl Interner {
 // ---- Clause-local variable scope (alpha-renaming -> 0-based ints) ----
 struct VarScope {
     map: HashMap<Box<str>, u32>, // var name -> 0-based index
-    names:Vec<Box<str>>,
-    next: u32,                   // next index to assign (also the size)
+    names: Vec<Box<str>>,
+    next: u32, // next index to assign (also the size)
 }
 impl VarScope {
     fn new() -> Self {
@@ -774,9 +803,13 @@ impl fmt::Display for KBError {
                 "Predicate '{}' arity mismatch: expected {}, found {}.",
                 predicate, expected, found
             ),
-            HeadVarNotBound { predicate,arg, arg_idx } => write!(
+            HeadVarNotBound {
+                predicate,
+                arg,
+                arg_idx,
+            } => write!(
                 f,
-                "Rule {predicate}(...): head var '{arg}' at position {arg_idx} not bound in body.", 
+                "Rule {predicate}(...): head var '{arg}' at position {arg_idx} not bound in body.",
             ),
             UnknownPredicateInQuery { predicate } => {
                 write!(f, "Query references unknown predicate '{}'.", predicate)
@@ -789,10 +822,7 @@ impl fmt::Display for KBError {
                 "Query on '{}' uses unknown constant '{}'.",
                 predicate, constant
             ),
-            KBError::UnboundVar { var } =>  write!(
-                f,
-                "Unbound Variable '{var}'"
-            ),
+            KBError::UnboundVar { var } => write!(f, "Unbound Variable '{var}'"),
         }
     }
 }
@@ -891,11 +921,13 @@ impl KB {
         let aid = self.canon_atom(a, &mut vs)?;
 
         for t in &aid.args {
-            match t.term(){
+            match t.term() {
                 TermId::Var(i) => {
-                    return Err(KBError::UnboundVar{var:vs.names[i as usize].clone()})
-                },
-                _=>{}
+                    return Err(KBError::UnboundVar {
+                        var: vs.names[i as usize].clone(),
+                    });
+                }
+                _ => {}
             }
         }
 
@@ -939,7 +971,7 @@ impl KB {
                     return Err(KBError::HeadVarNotBound {
                         predicate: r.head.predicate.clone(),
                         arg_idx: i,
-                        arg:vs.names[t.var_index() as usize].clone()
+                        arg: vs.names[t.var_index() as usize].clone(),
                     });
                 }
             }
@@ -1098,7 +1130,11 @@ mod tests_kb {
         let stmts = p.parse_all().unwrap();
         let mut b = KB::new();
         match b.add_statement(&stmts[0]) {
-            Err(KBError::HeadVarNotBound { predicate, arg_idx,arg: _ }) => {
+            Err(KBError::HeadVarNotBound {
+                predicate,
+                arg_idx,
+                arg: _,
+            }) => {
                 assert_eq!(predicate.as_ref(), "s");
                 assert_eq!(arg_idx, 0);
             }
