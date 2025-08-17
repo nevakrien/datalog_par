@@ -5,11 +5,11 @@
  * it is probably also a good idea to put some extra work to grammar rewrting
  */
 
+use crate::compile::SolveAction;
 use crate::compile::QueryInfo;
 use std::ops::DerefMut;
 use std::cell::UnsafeCell;
 use std::ops::Deref;
-use crate::parser::RuleId;
 use crate::parser::{ConstId, KB, PredId};
 use rayon::prelude::*;
 use hashbrown::{HashMap, HashSet};
@@ -99,11 +99,26 @@ fn merge_sets<T: Eq + Hash>(iter: impl ParallelIterator<Item = HashSet<T>>) -> H
 }
 
 fn run_iteration(info: &QueryInfo, data: &QueryData) -> AnsSet {
-    info.preds
+    // info.preds
+    //     .par_iter()
+    //     .filter_map(|p| {
+    //         let map = info.kb.producers[p]
+    //             .rules
+    //             .par_iter()
+    //             .map(|r| run_iteration_rule(r, info.kb, data));
+
+    //         let table = merge_sets(map);
+    //         if table.is_empty() {
+    //             None
+    //         } else {
+    //             Some((*p, table.into()))
+    //         }
+    //     })
+    //     .collect()
+     info.plans
         .par_iter()
-        .filter_map(|p| {
-            let map = info.kb.producers[p]
-                .rules
+        .filter_map(|(p,rules)| {
+            let map = rules
                 .par_iter()
                 .map(|r| run_iteration_rule(r, info.kb, data));
 
@@ -117,7 +132,7 @@ fn run_iteration(info: &QueryInfo, data: &QueryData) -> AnsSet {
         .collect()
 }
 
-fn run_iteration_rule(rule: &RuleId, info: &KB, data: &QueryData) -> HashSet<Group> {
+fn run_iteration_rule(rule: &SolveAction, info: &KB, data: &QueryData) -> HashSet<Group> {
     todo!()
 }
 

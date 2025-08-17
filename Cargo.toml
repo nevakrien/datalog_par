@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+either = "1.15.0"
 hashbrown = { version = "0.15", features = ["rayon"] }
 rayon = "=1.10.0"
