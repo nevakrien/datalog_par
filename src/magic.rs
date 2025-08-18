@@ -1,3 +1,4 @@
+use crate::solve::Cheat;
 use crate::parser::AtomId;
 use crate::parser::PredId;
 use crate::parser::ConstId;
@@ -171,20 +172,49 @@ impl MagicSet {
 	}
 
 
-    /// Move all delta -> full. Returns true if anything changed.
-    pub fn rotate(&mut self) -> bool {
+    /// Move all delta -> full. and put new delta
+    //   returns true if there delta is now empty
+    pub fn rotate(&mut self,mut new:Vec<HashMap<InnerKey,Cheat<ConstSet>>>) -> bool {
+    	assert_eq!(new.len(),self.buckets.len());
+
     	//this blocks everything so we prallalize as much as we can
-        self.buckets.par_iter_mut()
-        .flat_map(|Bucket { map, .. }|{
-        	map.par_iter_mut().map(|(_k,(full, delta))|{
+    	//first we do all the extends in parallel
+        self.buckets.par_iter_mut().zip(new.par_iter_mut())
+        .flat_map(|(Bucket { map, .. }, map2)|{
+        	map.par_iter_mut().map(move |(k,(full, delta))|{
         		if !delta.is_empty() {
-                    full.extend(delta.drain());
-                    true
-                }else{
-                	false
+                    full.extend(delta.drain());//this part is the biggest danger
                 }
+                if let Some(c) = map2.get(k){
+                	unsafe{
+	                	//SAFETY:
+	                	//keys to a hashmap are unique
+	                	//map2 is just in this bucket since its owned
+	                	std::mem::swap(delta, c.unsafe_mut());
+
+	                }
+                }
+
+                delta.is_empty() 
         	})
-        }).any(|b| b)
+        }).all(|b| b)
+
+        &&
+        //we are now stuck with things that grow the hashmaps
+        //no choice but to run single threaded
+        //only real scary part is grows
+        self.buckets.par_iter_mut().zip(new.into_par_iter())
+        .map(|(Bucket { map, .. }, map2)|{
+        	map2.into_iter().map(|(k,mut v)|{
+        		if v.is_empty(){
+        			true
+        		}else{
+        			std::mem::swap(&mut map.entry(k).or_default().1,&mut v);
+        			false
+        		}
+
+        	}).all(|b| {b})
+        }).all(|b| {b})
     }
 
 }
