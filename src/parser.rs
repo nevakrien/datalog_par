@@ -590,10 +590,34 @@ pub struct AtomId {
 impl AtomId {
 
     pub fn var_count(&self) -> usize {
-        let mut vars = self.args.iter().filter(|i| i.is_var())
-        .cloned().collect::<Vec<_>>();
-        vars.dedup();
+        let vars = self.args.iter().filter(|i| i.is_var())
+        .cloned().collect::<HashSet<_>>();
         vars.len()
+    }
+
+    pub fn is_canon(&self) -> bool{
+        let vars = self.args.iter().filter_map(|i| i.try_var())
+        .collect::<HashSet<_>>();
+
+        let Some(max) = vars.iter().max() else {
+            return true;
+        };
+
+        if *max >= vars.len() as u32{
+            return false;
+        }
+
+        if *max==0{
+            return true;
+        }
+
+        for i in 0..max-1 {
+            if !vars.contains(&i){
+                return false;
+            }
+        }
+
+        true
     }
 
     pub fn canonize(&mut self) {
@@ -1212,3 +1236,4 @@ mod tests_kb {
         }
     }
 }
+

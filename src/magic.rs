@@ -1,3 +1,4 @@
+use hashbrown::hash_map::Entry;
 use crate::solve::Cheat;
 use crate::parser::AtomId;
 use crate::parser::PredId;
@@ -36,47 +37,103 @@ impl MagicKey {
     	}) 
     }
 
-    //TODO remove the inner vecs
-    /// If `c` matches this pattern, compute (inner_key, projected) for insertion.
-    #[inline]
-    pub fn match_and_project<'inner, 'proj>(
-        &self,
-        c: &[ConstId],
-        scratch_inner: &'inner mut Vec<ConstId>,
-        scratch_proj:  &'proj  mut Vec<ConstId>,
-    ) -> Option<(InnerKey, &'proj [ConstId])> {
-        let arity = self.atom.args.len();
-        if c.len() != arity { return None; }
-        debug_assert_eq!(self.bounds >> arity, 0, "bounds has bits beyond arity");
+    
+}
 
-        scratch_inner.clear();
-        scratch_proj.clear();
+pub struct CompiledMagic{
+    key:MagicKey,
+    var_dup_lookup:HashMap<u32, usize> //var -> first occurance
+}
 
-        // constants must match; build inner_key in pos order
-        for (pos, arg) in self.atom.args.iter().enumerate() {
+impl CompiledMagic {
+    pub fn make_me(key:MagicKey)->Self{
+        debug_assert!(key.atom.is_canon());
+
+        // let mut id = 0;
+        // let mut h: HashMap<_, u32> = HashMap::new();
+        let mut var_dup_lookup = HashMap::new();
+
+        for (pos, arg) in key.atom.args.iter().enumerate() {
             match arg.term() {
-                TermId::Const(kc) => {
-                    if c[pos] != kc { return None; }
-                    scratch_inner.push(c[pos]);
+                TermId::Const(_kc) => {
+
                 }
-                TermId::Var(_v) => {todo!()/*check clashes*/}
+                TermId::Var(v) => {
+                    // let id =match h.entry(v) {
+                    //     Entry::Occupied(o) => {*o.get()},
+                    //     Entry::Vacant(v) => {
+                    //         v.insert(id);
+                    //         id+=1;
+                    //         id-1
+                    //     }
+                    // };
+
+                   var_dup_lookup.entry(v).or_insert(pos);
+                }
             }
         }
+
+        Self{key,var_dup_lookup}
+    }
+    #[inline]
+    pub fn matches(&self,c:&[ConstId])->bool{
+
+        let arity = self.key.atom.args.len();
+        if c.len() != arity { return false; }
+
+        // constants must match; build inner_key in pos order
+        for (pos, arg) in self.key.atom.args.iter().enumerate() {
+            match arg.term() {
+                TermId::Const(kc) => {
+                    if c[pos] != kc { return false; }
+                }
+                TermId::Var(v) => {
+                    let idx = self.var_dup_lookup[&v];
+                    if c[idx as usize]!=c[pos]{
+                        return false
+                    }
+                }
+            }
+        }
+
+        true
+
+    }
+    /// If `c` matches this pattern, compute (inner_key, projected) for insertion.
+    //TODO this needs to be optimized... like ALOT optimized
+    #[inline]
+    pub fn match_and_project(
+        &self,
+        c: &[ConstId],
+    ) -> Option<(InnerKey, Vec<ConstId>)> {
+        if !self.matches(c){
+            return None;
+        }
+        let arity = self.key.atom.args.len();
+        debug_assert_eq!(self.key.bounds >> arity, 0, "bounds has bits beyond arity");
+        
+        let mut key=Vec::with_capacity(arity);
+        let mut val=Vec::with_capacity(arity);
 
         // projection by bounds (pos order)
         for pos in 0..arity {
-            if (self.bounds >> pos) & 1 == 1 {
-                scratch_proj.push(c[pos]);
+            if (self.key.bounds >> pos) & 1 == 1 {
+                key.push(c[pos])
+
+            }
+            else {
+                val.push(c[pos]);
+
             }
         }
 
-        Some((scratch_inner.clone().into_boxed_slice(), &*scratch_proj))
+        Some((key.into_boxed_slice(), val))
     }
 }
 
 // Flat bucket with its pattern
 struct Bucket {
-    key: MagicKey,
+    magic: CompiledMagic,
     map: HashMap<InnerKey, FullDelta>,
 }
 
@@ -106,7 +163,7 @@ impl MagicSet {
         let id = KeyId(self.buckets.len());
         self.by_pred.entry(key.atom.pred).or_default().push(id);
 
-        self.buckets.push(Bucket { key: key.clone(), map: HashMap::new() });
+        self.buckets.push(Bucket { magic: CompiledMagic::make_me(key.clone()), map: HashMap::new() });
         self.existing.insert(key.clone(),id);
 
         if key.is_generic(){
@@ -147,37 +204,6 @@ impl MagicSet {
         id
     }
 
-    /// Insert a fully-ground tuple `c` for predicate `pred`.
-	/// Returns true if any bucket staged a new delta.
-	pub fn insert(&mut self, pred: PredId, c: &[ConstId]) -> bool {
-	    // 1) generic bucket (pattern = all vars, bounds = 0, inner_key = [])
-        let entry = self.generic_bucket_mut(pred);
-        if !entry.0.contains(c) && !entry.1.insert(c.into()) {
-            return false;
-        }
-
-	    // 2) specialized buckets for this pred
-	    if let Some(ids) = self.by_pred.get(&pred) {
-	        let (mut inner, mut proj) = (Vec::new(), Vec::new());
-	        for &id in ids {
-	            let key = &self.buckets[id.0].key;
-	            if let Some((inner_key_box, proj_borrowed)) =
-	                key.match_and_project(c, &mut inner, &mut proj)
-	            {
-	                let entry = self.buckets[id.0]
-	                    .map
-	                    .entry(inner_key_box)
-	                    .or_insert_with(|| (ConstSet::new(), ConstSet::new()));
-
-	                if !entry.0.contains(proj_borrowed) {
-	                    entry.1.insert(Projected::from(proj_borrowed));
-	                }
-	            }
-	        }
-	    }
-
-	    true
-	}
 
     pub fn additions(&self, pred: PredId, c: &[ConstId])->Option<Vec<(KeyId,(InnerKey, Box<[ConstId]>))>>{
         let entry = self.generic_bucket(pred);
@@ -190,12 +216,11 @@ impl MagicSet {
             panic!()
         };
 
-        let (mut inner, mut proj) = (Vec::new(), Vec::new());
         Some(ids.iter().filter_map(move |id| {
-            let key = &self.buckets[id.0].key;
+            let magic = &self.buckets[id.0].magic;
 
             let (k,v) =
-                key.match_and_project(c, &mut inner, &mut proj)?;
+                magic.match_and_project(c)?;
                 Some((*id,(k,v.into())))
             
         }).collect())
@@ -231,7 +256,6 @@ impl MagicSet {
     /// Move all delta -> full.
     pub fn rotate(&mut self) {
     	//this blocks everything so we prallalize as much as we can
-    	//first we do all the extends in parallel
         self.buckets.par_iter_mut()
         .for_each(|Bucket { map, .. }|{
         	map.par_iter_mut().for_each(move |(_k,(full, delta))|{
@@ -244,4 +268,173 @@ impl MagicSet {
         });
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::num::NonZeroU32;
+
+    // --- Minimal helpers for non-zero ids ---
+    // If PredId/ConstId already expose a public `new(NonZeroU32)` or similar,
+    // use that instead of these cfg(test) shims.
+    #[cfg(test)]
+    impl PredId {
+        pub fn from_u32(n: u32) -> Self {
+            Self(NonZeroU32::new(n).expect("PredId must be non-zero"))
+        }
+    }
+    #[cfg(test)]
+    impl ConstId {
+        pub fn from_u32(n: u32) -> Self {
+            Self(NonZeroU32::new(n).expect("ConstId must be non-zero"))
+        }
+    }
+
+    // tiny helper to build an AtomId without the parser
+    fn atom(pred: u32, terms: &[TermId]) -> AtomId {
+        AtomId {
+            pred: PredId::from_u32(pred),
+            args: terms.iter().cloned().map(Into::into).collect(),
+        }
+    }
+
+    #[test]
+    fn matches_repeated_vars() {
+        // p(X, X, Y)
+        let key = MagicKey {
+            atom: atom(1, &[TermId::Var(0), TermId::Var(0), TermId::Var(1)]),
+            bounds: 0,
+        };
+        debug_assert!(key.atom.is_canon());
+
+        let cm = CompiledMagic::make_me(key);
+
+        let a = ConstId::from_u32(1);
+        let b = ConstId::from_u32(2);
+
+        assert!(cm.matches(&[a, a, b]));   // ok
+        assert!(!cm.matches(&[a, b, b]));  // X must equal X
+        assert!(!cm.matches(&[a, a]));     // arity mismatch
+    }
+
+    #[test]
+    fn matches_mix_constants_and_vars() {
+        // p(c, X, c)
+        let c = ConstId::from_u32(7);
+        let key = MagicKey {
+            atom: atom(2, &[TermId::Const(c), TermId::Var(0), TermId::Const(c)]),
+            bounds: 0,
+        };
+        debug_assert!(key.atom.is_canon());
+
+        let cm = CompiledMagic::make_me(key);
+
+        let x = ConstId::from_u32(9);
+        let y = ConstId::from_u32(9);
+        assert!(cm.matches(&[c, x, c]));              // constants align
+        assert!(!cm.matches(&[c, x, y])); // last const mismatch
+        assert!(!cm.matches(&[y, x, c])); // first const mismatch
+    }
+
+    #[test]
+    fn matches_fully_generic() {
+        // p(X, Y, Z)
+        let key = MagicKey {
+            atom: atom(3, &[TermId::Var(0), TermId::Var(1), TermId::Var(2)]),
+            bounds: 0,
+        };
+        debug_assert!(key.atom.is_canon());
+
+        let cm = CompiledMagic::make_me(key);
+
+        let a = ConstId::from_u32(1);
+        let b = ConstId::from_u32(2);
+        let c = ConstId::from_u32(3);
+
+        assert!(cm.matches(&[a, b, c]));
+        assert!(cm.matches(&[a, a, a]));
+    }
+
+    //============================================================================================
+    //============================================================================================
+    //============================================================================================
+    //============================================================================================
+    //============================================================================================
+
+    #[test]
+    fn fully_generic_bounds_101() {
+        // p(X, Y, Z), bounds = 0b101 -> left: pos 0,2 ; right: pos 1
+        let key = MagicKey {
+            atom: atom(1, &[TermId::Var(0), TermId::Var(1), TermId::Var(2)]),
+            bounds: 0b101,
+        };
+        assert!(key.atom.is_canon());
+        let cm = CompiledMagic::make_me(key);
+
+        let a = ConstId::from_u32(10);
+        let b = ConstId::from_u32(20);
+        let c = ConstId::from_u32(30);
+
+        let some = cm.match_and_project(&[a, b, c]).expect("should match");
+        let (left, right) = some;
+
+        assert_eq!(left, vec![a, c].into());     // positions 0 and 2
+        assert_eq!(right, vec![b]);       // remaining position 1
+        assert_eq!(left.len() + right.len(), 3);
+    }
+
+    #[test]
+    fn constants_are_included_where_selected_by_bounds() {
+        // p(k, X, k, Y), bounds = 0b0110 -> left: pos 1,2 ; right: pos 0,3
+        let k = ConstId::from_u32(7);
+        let key = MagicKey {
+            atom: atom(2, &[TermId::Const(k), TermId::Var(0), TermId::Const(k), TermId::Var(1)]),
+            bounds: 0b0110,
+        };
+        assert!(key.atom.is_canon());
+        let cm = CompiledMagic::make_me(key);
+
+        let x = ConstId::from_u32(8);
+        let y = ConstId::from_u32(9);
+
+        let (left, right) = cm.match_and_project(&[k, x, k, y]).expect("should match");
+        assert_eq!(left,  vec![x, k].into());    // pos 1,2 (includes constant k)
+        assert_eq!(right, vec![k, y]);    // pos 0,3
+        assert_eq!(left.len() + right.len(), 4);
+    }
+
+    #[test]
+    fn repeated_vars_enforced_then_split_by_bounds() {
+        // p(X, X, Y), bounds = 0b011 -> left: pos 0,1 ; right: pos 2
+        let key = MagicKey {
+            atom: atom(3, &[TermId::Var(0), TermId::Var(0), TermId::Var(1)]),
+            bounds: 0b011,
+        };
+        assert!(key.atom.is_canon());
+        let cm = CompiledMagic::make_me(key);
+
+        let x = ConstId::from_u32(11);
+        let y = ConstId::from_u32(12);
+
+        // matches: X == X
+        let (left, right) = cm.match_and_project(&[x, x, y]).expect("should match");
+        assert_eq!(left,  vec![x, x].into());
+        assert_eq!(right, vec![y]);
+
+        // does not match when repeated var differs
+        assert!(cm.match_and_project(&[x, y, y]).is_none());
+    }
+
+    #[test]
+    fn arity_mismatch_is_none() {
+        let key = MagicKey {
+            atom: atom(4, &[TermId::Var(0), TermId::Var(1)]),
+            bounds: 0b01,
+        };
+        let cm = CompiledMagic::make_me(key);
+        let a = ConstId::from_u32(1);
+        assert!(cm.match_and_project(&[a]).is_none());
+        assert!(cm.match_and_project(&[a, a, a]).is_none());
+    }
 }
