@@ -171,50 +171,42 @@ impl MagicSet {
 	    true
 	}
 
+    ///puts in a new set of delta and checks if they are all empty
+    pub fn put_new_delta(
+        &mut self,
+        new: Vec<HashMap<InnerKey, ConstSet>>
+    ) -> bool {
+        assert_eq!(new.len(), self.buckets.len());
 
-    /// Move all delta -> full. and put new delta
-    //   returns true if there delta is now empty
-    pub fn rotate(&mut self,mut new:Vec<HashMap<InnerKey,Cheat<ConstSet>>>) -> bool {
-    	assert_eq!(new.len(),self.buckets.len());
+        self.buckets
+            .par_iter_mut()
+            .zip(new.into_par_iter())
+            .map(|(Bucket { map, .. }, map2)| {
+                // Per-bucket: all incoming sets empty?
+                map2.into_iter().all(|(k, mut v)| {
+                    if v.is_empty() {
+                        true
+                    } else {
+                        // swap into this bucket’s delta; old delta should be empty
+                        std::mem::swap(&mut map.entry(k).or_default().1, &mut v);
+                        false
+                    }
+                })
+            })
+            .reduce(|| true, |a, b| a && b)
+    }
 
+    /// Move all delta -> full.
+    pub fn rotate(&mut self) {
     	//this blocks everything so we prallalize as much as we can
     	//first we do all the extends in parallel
-        self.buckets.par_iter_mut().zip(new.par_iter_mut())
-        .flat_map(|(Bucket { map, .. }, map2)|{
-        	map.par_iter_mut().map(move |(k,(full, delta))|{
-        		if !delta.is_empty() {
-                    full.extend(delta.drain());//this part is the biggest danger
-                }
-                if let Some(c) = map2.get(k){
-                	unsafe{
-	                	//SAFETY:
-	                	//keys to a hashmap are unique
-	                	//map2 is just in this bucket since its owned
-	                	std::mem::swap(delta, c.unsafe_mut());
-
-	                }
-                }
-
-                delta.is_empty() 
+        self.buckets.par_iter_mut()
+        .flat_map(|Bucket { map, .. }|{
+        	map.par_iter_mut().map(move |(_k,(full, delta))|{
+        		full.extend(delta.drain());
         	})
-        }).all(|b| b)
-
-        &&
-        //we are now stuck with things that grow the hashmaps
-        //no choice but to run single threaded
-        //only real scary part is grows
-        self.buckets.par_iter_mut().zip(new.into_par_iter())
-        .map(|(Bucket { map, .. }, map2)|{
-        	map2.into_iter().map(|(k,mut v)|{
-        		if v.is_empty(){
-        			true
-        		}else{
-        			std::mem::swap(&mut map.entry(k).or_default().1,&mut v);
-        			false
-        		}
-
-        	}).all(|b| {b})
-        }).all(|b| {b})
+        });
+        
     }
 
 }
