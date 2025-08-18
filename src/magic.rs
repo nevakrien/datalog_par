@@ -172,9 +172,10 @@ impl MagicSet {
 	}
 
     ///puts in a new set of delta and checks if they are all empty
+    //we want to try avoid destructors so the old delta is put back into new
     pub fn put_new_delta(
         &mut self,
-        new: Vec<HashMap<InnerKey, ConstSet>>
+        new: &mut Vec<HashMap<InnerKey, ConstSet>>
     ) -> bool {
         assert_eq!(new.len(), self.buckets.len());
 
@@ -183,7 +184,8 @@ impl MagicSet {
             .zip(new.into_par_iter())
             .map(|(Bucket { map, .. }, map2)| {
                 // Per-bucket: all incoming sets empty?
-                map2.into_iter().all(|(k, mut v)| {
+                // this is serial but fairly small per bucket
+                map2.drain().all(|(k, mut v)| {
                     if v.is_empty() {
                         true
                     } else {
@@ -201,12 +203,15 @@ impl MagicSet {
     	//this blocks everything so we prallalize as much as we can
     	//first we do all the extends in parallel
         self.buckets.par_iter_mut()
-        .flat_map(|Bucket { map, .. }|{
-        	map.par_iter_mut().map(move |(_k,(full, delta))|{
+        .for_each(|Bucket { map, .. }|{
+        	map.par_iter_mut().for_each(move |(_k,(full, delta))|{
         		full.extend(delta.drain());
-        	})
+
+                //memory is useless now and would be droped later
+                //better do it now in parallel
+                *delta=HashSet::new();
+        	});
         });
-        
     }
 
 }
