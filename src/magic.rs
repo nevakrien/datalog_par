@@ -36,6 +36,7 @@ impl MagicKey {
     	}) 
     }
 
+    //TODO remove the inner vecs
     /// If `c` matches this pattern, compute (inner_key, projected) for insertion.
     #[inline]
     pub fn match_and_project<'inner, 'proj>(
@@ -124,12 +125,19 @@ impl MagicSet {
 	    *self.generic.get(&pred).expect("generic KeyId must be pre-registered")
 	}
 
-	fn generic_bucket(&mut self, pred: PredId)->&mut FullDelta{
+	fn generic_bucket_mut(&mut self, pred: PredId)->&mut FullDelta{
 		let gid = self.generic_id(pred);
         let gmap = &mut self.buckets[gid.0].map;
         gmap
             .get_mut(&InnerKey::from(&[][..])).unwrap()
 	}
+
+    fn generic_bucket(&self, pred: PredId)->&FullDelta{
+        let gid = self.generic_id(pred);
+        let gmap = &self.buckets[gid.0].map;
+        gmap
+            .get(&InnerKey::from(&[][..])).unwrap()
+    }
 
 
     /// Register (or get) the generic bucket for (pred, arity).
@@ -143,7 +151,7 @@ impl MagicSet {
 	/// Returns true if any bucket staged a new delta.
 	pub fn insert(&mut self, pred: PredId, c: &[ConstId]) -> bool {
 	    // 1) generic bucket (pattern = all vars, bounds = 0, inner_key = [])
-        let entry = self.generic_bucket(pred);
+        let entry = self.generic_bucket_mut(pred);
         if !entry.0.contains(c) && !entry.1.insert(c.into()) {
             return false;
         }
@@ -170,6 +178,28 @@ impl MagicSet {
 
 	    true
 	}
+
+    pub fn additions(&self, pred: PredId, c: &[ConstId])->Option<Vec<(KeyId,(InnerKey, Box<[ConstId]>))>>{
+        let entry = self.generic_bucket(pred);
+
+        if entry.0.contains(c) || entry.1.contains(c) {
+            return None;
+        }
+
+        let Some(ids) = self.by_pred.get(&pred) else {
+            panic!()
+        };
+
+        let (mut inner, mut proj) = (Vec::new(), Vec::new());
+        Some(ids.iter().filter_map(move |id| {
+            let key = &self.buckets[id.0].key;
+
+            let (k,v) =
+                key.match_and_project(c, &mut inner, &mut proj)?;
+                Some((*id,(k,v.into())))
+            
+        }).collect())
+    }
 
     ///puts in a new set of delta and checks if they are all empty
     //we want to try avoid destructors so the old delta is put back into new
