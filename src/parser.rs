@@ -588,45 +588,37 @@ pub struct AtomId {
 }
 
 impl AtomId {
-    fn bigest_var(&self) -> i32 {
-        self.args.iter().map(|i| i.0).max().unwrap_or(i32::MIN)
-    }
 
     pub fn var_count(&self) -> usize {
-        let ans = self.bigest_var();
-        if ans < 0 { 0 } else { ans as usize + 1 }
+        let mut vars = self.args.iter().filter(|i| i.is_var())
+        .cloned().collect::<Vec<_>>();
+        vars.dedup();
+        vars.len()
     }
 
     pub fn canonize(&mut self) {
-        let Some(m) = self.args.iter().filter_map(|x| x.try_var()).min() else {
-            return;
-        };
-        for x in &mut self.args {
-            if x.is_const() {
-                continue;
-            }
+        todo!()
+        // let Some(m) = self.args.iter().filter_map(|x| x.try_var()).min() else {
+        //     return;
+        // };
+        // for x in &mut self.args {
+        //     if x.is_const() {
+        //         continue;
+        //     }
 
-            *x = TermId::Var(x.var_index() - m).into();
-        }
+        //     *x = TermId::Var(x.var_index() - m).into();
+        // }
     }
 }
 
 // Total order for canonical sorting/dedup in rule bodies
 impl Ord for AtomId {
     fn cmp(&self, other: &Self) -> Ordering {
-        // 1) fewest vars first (least general first)
-        match self.bigest_var().cmp(&other.bigest_var()) {
-            Ordering::Equal => {
-                // 2) by predicate id
-                match self.pred.cmp(&other.pred) {
-                    Ordering::Equal => {
-                        // 3) lexicographic by args (raw i32)
-                        self.args.as_ref().cmp(other.args.as_ref())
-                    }
-                    o => o,
-                }
-            }
-            o => o,
+        let ans = self.args.as_ref().cmp(other.args.as_ref());
+        if ans == Ordering::Equal{
+            self.pred.cmp(&other.pred)
+        }else{
+            ans
         }
     }
 }
