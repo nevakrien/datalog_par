@@ -1,248 +1,117 @@
-// /*!
-//  * we are doing a naive solve for now,
-//  * note however that we can improve things a lot by optimizing what we run over
-//  * we could also add magic sets althout these require more work
-//  * it is probably also a good idea to put some extra work to grammar rewrting
-//  */
 
-// use crate::compile::QueryInfo;
-// use crate::compile::SolveAction;
-// use crate::parser::{ConstId, KB, PredId};
-// use hashbrown::{HashMap, HashSet};
-// use rayon::prelude::*;
-// use std::cell::UnsafeCell;
-// use std::hash::Hash;
-// use std::ops::Deref;
-// use std::ops::DerefMut;
+use std::mem::transmute;
+use crate::magic::MagicSet;
+use crate::magic::KeyId;
+use crate::parser::ConstId;
+use rayon::prelude::*;
 
-// ///this is considered a T for safe code but its actualy UnsafeCell
-// #[repr(transparent)]
-// pub struct Cheat<T>(pub UnsafeCell<T>);
-// impl<T> Cheat<T> {
-//     pub fn into_inner(self) -> T {
-//         self.0.into_inner()
-//     }
-//     pub fn get(&self) -> *mut T {
-//         self.0.get()
-//     }
-//     pub unsafe fn unsafe_mut(&self) -> &mut T {
-//         unsafe { &mut *self.0.get() }
-//     }
-// }
-// impl<T> Deref for Cheat<T> {
-//     type Target = T;
-//     fn deref(&self) -> &T {
-//         unsafe { &*self.0.get() }
-//     }
-// }
-// impl<T> DerefMut for Cheat<T> {
-//     fn deref_mut(&mut self) -> &mut T {
-//         self.0.get_mut()
-//     }
-// }
+pub type QueryElem = [Option<ConstId>];
 
-// unsafe impl<T: Sync> Sync for Cheat<T> {}
-// unsafe impl<T: Send> Send for Cheat<T> {}
+pub struct RuleSolver {
+    keyid:KeyId,
+    key_gathers: Box<[usize]>,
+    val_gathers: Box<[(usize,usize)]>,//found -> existing
+}
 
-// impl<T> From<T> for Cheat<T> {
-//     fn from(t: T) -> Self {
-//         Self(t.into())
-//     }
-// }
+impl RuleSolver {
+    pub fn single_apply(&self,elem:&QueryElem,magic:&MagicSet,delta:bool)->Vec<Box<QueryElem>>{
+        let key: Box<[_]> = self.key_gathers.iter().map(|i| elem[*i].unwrap()).collect();
+        let spot = &magic[self.keyid].map[&key];
 
-// pub type Group = Box<[ConstId]>;
-// pub type AnsSet = HashMap<PredId, Cheat<HashSet<Group>>>;
+        let s = if delta {&spot.1} else{&spot.0};
+        
+        //if no gathers we just check existance
+        if self.val_gathers.is_empty(){
+            return if s.is_empty(){
+                Vec::new()
+            }else{
+                vec![elem.into()]
+            }
+        }
 
-// pub struct QueryData {
-//     full: AnsSet,
-//     delta: AnsSet,
-// }
+        //wekk we have to actually loop
+        s.par_iter().map(|v|{
+            let mut ans:Box<[_]> = elem.into();
+            for (i,k) in self.val_gathers.iter() {
+                ans[*k] = Some(v[*i]);
+            }
+            ans
+        }).collect()
+    }
+}
 
-// impl QueryData {
-//     pub fn new(preds: &[PredId]) -> Self {
-//         Self {
-//             full: preds.iter().map(|p| (*p, HashSet::new().into())).collect(),
-//             delta: AnsSet::new(),
-//         }
-//     }
-//     pub fn rotate(&mut self, mut new_delta: AnsSet) {
-//         std::mem::swap(&mut self.delta, &mut new_delta);
-//         if new_delta.is_empty() {
-//             return;
-//         }
+//we kinda wish this could be removed entirly
+//with a clever compiler it can be 
+//if we just put the elems in the right place
+pub struct FinalGather {
+    gathers: Box<[(usize,usize)]>, //swaps *i=j
+    trunc:usize
+}
 
-//         new_delta.into_par_iter().for_each(|(k, mut v)| {
-//             //this is safe since every value in new_delta is unique
-//             unsafe { self.full.get(&k).unwrap().unsafe_mut().extend(v.drain()) }
-//         });
-//         // for (k,mut v) in new_delta.into_iter(){
-//         //  	//this is safe since every value in new_delta is unique
-//         //  	unsafe{
-//         //  		self.full.get(&k).unwrap().unsafe_mut().extend(v.drain())
-//         //  	}
-//         // };
-//     }
-// }
+impl FinalGather {
+    pub fn finalize(&self,mut elem:Box<QueryElem>)->Box<[ConstId]>{
+        for (i,j) in &self.gathers{
+            elem[*i]=elem[*j];
+        }
 
-// pub fn run_to_end(info: &QueryInfo, data: &mut QueryData) {
-//     loop {
-//         data.rotate(run_iteration(info, data));
-//         if data.delta.is_empty() {
-//             return;
-//         }
-//     }
-// }
+        let mut v:Vec<_> = elem.into();
+        v.truncate(self.trunc);
 
-// fn merge_sets<T: Eq + Hash>(iter: impl ParallelIterator<Item = HashSet<T>>) -> HashSet<T> {
-//     iter.reduce_with(|mut a, mut b| {
-//         if a.len() >= b.len() {
-//             a.reserve(b.len());
-//             a.extend(b.into_iter());
-//             a
-//         } else {
-//             b.reserve(a.len());
-//             b.extend(a.into_iter());
-//             b
-//         }
-//     })
-//     .unwrap_or_default()
-// }
+        assert!(v.iter().all(|x|x.is_some()));
 
-// fn run_iteration(info: &QueryInfo, data: &QueryData) -> AnsSet {
-//     todo!()
-//     // info.preds
-//     //     .par_iter()
-//     //     .filter_map(|p| {
-//     //         let map = info.kb.producers[p]
-//     //             .rules
-//     //             .par_iter()
-//     //             .map(|r| run_iteration_rule(r, info.kb, data));
+        //nonzero and option non zero are the same
+        //see https://doc.rust-lang.org/beta/std/num/struct.NonZero.html
+        unsafe{transmute(v.into_boxed_slice())}
+    }
+}
 
-//     //         let table = merge_sets(map);
-//     //         if table.is_empty() {
-//     //             None
-//     //         } else {
-//     //             Some((*p, table.into()))
-//     //         }
-//     //     })
-//     //     .collect()
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::num::NonZeroU32;
 
-//     // info.plans
-//     //     .par_iter()
-//     //     .filter_map(|(p, rules)| {
-//     //         let map = rules
-//     //             .par_iter()
-//     //             .map(|r| run_iteration_rule(r, info.kb, data));
+    // Helper: make a ConstId from a nonzero u32.
+    // Adjust to your real constructor if different.
+    #[inline]
+    fn cid(n: u32) -> ConstId {
+        assert!(n != 0, "ConstId must be nonzero");
+        // If ConstId is a #[repr(transparent)] newtype around NonZeroU32,
+        // this transmute in test code is fine. Replace with your real ctor
+        // e.g. ConstId(NonZeroU32::new(n).unwrap()) if that exists.
+        unsafe { std::mem::transmute::<NonZeroU32, ConstId>(NonZeroU32::new(n).unwrap()) }
+    }
 
-//     //         let table = merge_sets(map);
-//     //         if table.is_empty() {
-//     //             None
-//     //         } else {
-//     //             Some((*p, table.into()))
-//     //         }
-//     //     })
-//     //     .collect()
-// }
+    #[test]
+    fn finalize_basic_trunc_and_swaps_work() {
+        // Start with [Some(1), Some(2), None, Some(4)]
+        // We will swap index 2 <- index 3, then truncate to 3,
+        // so the result should be [1, 2, 4].
+        let gathers: Box<[(usize, usize)]> = Box::from([(2, 3)]); // elem[2] = elem[3]
+        let fg = FinalGather { gathers, trunc: 3 };
 
-// fn run_iteration_rule(rule: &SolveAction, info: &KB, data: &QueryData) -> HashSet<Group> {
-//     todo!()
-// }
+        let elem: Box<[Option<ConstId>]> = Box::from([
+            Some(cid(1)),
+            Some(cid(2)),
+            None,
+            Some(cid(4)),
+        ]);
 
-// #[cfg(test)]
-// mod tests {
-//     // use std::num::NonZero;
-//     use super::*;
-//     use std::num::NonZeroU32;
+        let out: Box<[ConstId]> = fg.finalize(elem);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out, vec![cid(1), cid(2), cid(4)].into());
+    }
 
-//     fn pid(n: u32) -> PredId {
-//         PredId(NonZeroU32::new(n).unwrap())
-//     }
-//     fn cid(n: u32) -> ConstId {
-//         ConstId(NonZeroU32::new(n).unwrap())
-//     }
-//     fn g(xs: &[u32]) -> Group {
-//         xs.iter()
-//             .map(|&x| cid(x))
-//             .collect::<Vec<_>>()
-//             .into_boxed_slice()
-//     }
-
-//     #[test]
-//     fn rayon_wroks() {
-//         let a: i32 = [1; 300].par_iter().sum();
-//         assert_eq!(a, (0..300).map(|_| { 1 }).sum())
-//     }
-//     #[test]
-//     fn rotate_equals_sequential_union() {
-//         let preds: Vec<_> = (1..=16).map(pid).collect();
-//         let mut qd = QueryData::new(&preds);
-
-//         // seed delta (will be unioned on first rotate)
-//         qd.delta = preds
-//             .iter()
-//             .map(|&p| {
-//                 let mut s = HashSet::new();
-//                 for j in 2..4 {
-//                     s.insert(g(&[p.0.get(), j]));
-//                 }
-//                 (p, s.into())
-//             })
-//             .collect();
-
-//         // build expected by sequential union
-//         let mut expected: HashMap<PredId, HashSet<Group>> = HashMap::new();
-//         for (&p, set) in &qd.delta {
-//             expected.entry(p).or_default().extend(set.iter().cloned());
-//         }
-
-//         // rotate with empty "new"
-//         qd.rotate(HashMap::new());
-
-//         // snapshot full
-//         let mut got: HashMap<PredId, HashSet<Group>> = HashMap::new();
-//         for (p, cell) in &qd.full {
-//             let set: &HashSet<Group> = &*cell; // safe read
-//             got.insert(*p, set.clone());
-//         }
-
-//         assert_eq!(got, expected);
-//         assert!(qd.delta.is_empty());
-//     }
-
-//     // #[test]
-//     // #[cfg_attr(miri, ignore)] // don’t run this under Miri
-//     // fn stress_test_rotate() {
-
-//     //     // pick some fake preds
-//     //     let preds: Vec<PredId> = (1..16).map(|i| PredId(NonZeroU32::new(i).unwrap())).collect();
-//     //     let mut qd = QueryData::new(&preds);
-
-//     //     for j in 1..50 {
-//     //         // build a new_delta with large random sets
-//     //         let mut new_delta: AnsSet = HashMap::new();
-
-//     //         for &p in &preds {
-//     //             let mut hs = HashSet::new();
-
-//     //             for i in 1..10000 {
-//     //                 let len = i%5;
-//     //                 let mut g = Vec::with_capacity(len);
-//     //                 for k in 0..len {
-//     //                     g.push(ConstId(NonZeroU32::new((1+i*j*k) as u32).unwrap()));
-//     //                 }
-//     //                 hs.insert(g.into_boxed_slice());
-//     //             }
-
-//     //             new_delta.insert(p, hs.into());
-//     //         }
-
-//     //         // rotate should merge these safely
-//     //         qd.rotate(new_delta);
-//     //     }
-
-//     //     // sanity check: all preds have some data
-//     //     for (p, set) in &qd.full {
-//     //         assert!(!set.is_empty(), "predicate {:?} unexpectedly empty", p);
-//     //     }
-//     // }
-// }
+    #[test]
+    #[should_panic(expected = "all(|x| x.is_some())")]
+    fn finalize_panics_if_any_none_remains() {
+        // No gather to fill the None at index 2 ⇒ assert! should trip.
+        let fg = FinalGather { gathers: Box::new([]), trunc: 4 };
+        let elem: Box<[Option<ConstId>]> = Box::from([
+            Some(cid(1)),
+            Some(cid(2)),
+            None,
+            Some(cid(4)),
+        ]);
+        let _ = fg.finalize(elem);
+    }
+}

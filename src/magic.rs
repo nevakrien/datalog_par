@@ -1,3 +1,4 @@
+use std::ops::Index;
 use crate::parser::AtomId;
 use crate::parser::PredId;
 use crate::parser::ConstId;
@@ -136,9 +137,9 @@ impl CompiledMagic {
 
 // Flat bucket with its pattern
 #[derive(Debug)]
-struct Bucket {
-    magic: CompiledMagic,
-    map: HashMap<InnerKey, FullDelta>,
+pub struct Bucket {
+    pub magic: CompiledMagic,
+    pub map: HashMap<InnerKey, FullDelta>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -152,10 +153,16 @@ pub struct MagicSet {
     existing: HashMap<MagicKey,KeyId>,
 }
 
+impl Index<KeyId> for MagicSet {
+type Output = Bucket;
+fn index(&self, id: KeyId) -> &Bucket{ &self.buckets[id.0] }
+}
+
 impl MagicSet {
     pub fn new() -> Self {
         Self { buckets: Vec::new(), by_pred: HashMap::new(), generic: HashMap::new(),existing:HashMap::new() }
     }
+
 
     /// Register a magic pattern. Returns its KeyId.
     pub fn register(&mut self, key: MagicKey) -> KeyId {
@@ -242,8 +249,6 @@ impl MagicSet {
             .par_iter_mut()
             .zip(new.into_par_iter())
             .map(|(Bucket { map, .. }, map2)| {
-                // Per-bucket: all incoming sets empty?
-                // this is serial but fairly small per bucket
                 if map2.is_empty(){
                     return true;
                 }
@@ -266,7 +271,7 @@ impl MagicSet {
         .for_each(|Bucket { map, .. }|{
         	map.par_iter_mut().for_each(move |(_k,(full, delta))|{
 
-                full.extend(delta.drain()); //serial since we have enough
+                full.extend(delta.drain()); //serial since we have enough (extend would side allocate)
                 // full.par_extend(delta.par_drain());
 
                 //memory is useless now and would be droped later

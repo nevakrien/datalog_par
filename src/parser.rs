@@ -486,14 +486,17 @@ use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU32;
 
 // ---- Non-zero IDs (separate namespaces) ----
+#[repr(transparent)]
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
 pub struct PredId(pub(crate) NonZeroU32);
+#[repr(transparent)]
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
 pub struct ConstId(pub(crate) NonZeroU32);
 
 // ---- Compact term representation ----
 // Vars:  0,1,2,...  (clause-local index, 0-based)
 // Const: -id         (id is NonZeroU32, so negative never overlaps vars)
+#[repr(transparent)]
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
 pub struct Term32(pub i32);
 
