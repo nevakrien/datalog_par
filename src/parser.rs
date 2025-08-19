@@ -594,26 +594,15 @@ impl AtomId {
         .cloned().collect::<HashSet<_>>();
         vars.len()
     }
-
     pub fn is_canon(&self) -> bool{
-        let vars = self.args.iter().filter_map(|i| i.try_var())
-        .collect::<HashSet<_>>();
-
-        let Some(max) = vars.iter().max() else {
-            return true;
-        };
-
-        if *max >= vars.len() as u32{
-            return false;
-        }
-
-        if *max==0{
-            return true;
-        }
-
-        for i in 0..max-1 {
-            if !vars.contains(&i){
+        let mut next_var = 0;
+        for id in self.args.iter().filter_map(|i| i.try_var()){
+            if id > next_var {
                 return false;
+            }
+
+            if id == next_var{
+                next_var+=1;
             }
         }
 
