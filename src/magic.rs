@@ -5,6 +5,7 @@ use crate::parser::TermId;
 use hashbrown::{HashMap, HashSet};
 use rayon::prelude::*;
 
+
 // ---- Types ----
 pub type Bound = u64;                    // arity <= 64 (debug assert)
 pub type InnerKey = Box<[ConstId]>;      // projection of pattern-constants (in pos order)
@@ -74,7 +75,6 @@ impl CompiledMagic {
                 }
             }
         }
-
         Self{key,var_dup_lookup}
     }
     #[inline]
@@ -84,7 +84,7 @@ impl CompiledMagic {
         if c.len() != arity { return false; }
 
         // constants must match; build inner_key in pos order
-        for (pos, arg) in self.key.atom.args.iter().enumerate() {
+        for (pos, arg) in self.key.atom.args.iter().enumerate() {            
             match arg.term() {
                 TermId::Const(kc) => {
                     if c[pos] != kc { return false; }
@@ -121,7 +121,7 @@ impl CompiledMagic {
         let mut val=Vec::with_capacity(val_len);
 
         // projection by bounds (pos order)
-        for pos in 0..arity {
+        for pos in 0..arity {     
             if (self.key.bounds >> pos) & 1 == 1 {
                 key.push(c[pos])
             }
@@ -219,7 +219,7 @@ impl MagicSet {
             // println!("in id {} with {c:?}", id.0);
             let (k,v) =
                 magic.match_and_project(c)?;
-                // println!("yay worked giving key {k:?}");
+                // println!("found addition with val {v:?}");
                 Some((*id,(k,v.into())))
             
         }).collect())
@@ -244,15 +244,17 @@ impl MagicSet {
             .map(|(Bucket { map, .. }, map2)| {
                 // Per-bucket: all incoming sets empty?
                 // this is serial but fairly small per bucket
-                map2.drain().all(|(k, mut v)| {
-                    if v.is_empty() {
-                        true
-                    } else {
-                        // swap into this bucket’s delta; old delta should be empty
-                        std::mem::swap(&mut map.entry(k).or_default().1, &mut v);
-                        false
-                    }
-                })
+                if map2.is_empty(){
+                    return true;
+                }
+                map2.drain().for_each(|(k, mut v)| {
+                    debug_assert!(!v.is_empty(),"we have a nonsensical empty insert");
+
+                    std::mem::swap(&mut map.entry(k).or_default().1, &mut v);
+                    debug_assert!(v.is_empty());
+
+                });
+                false
             })
             .reduce(|| true, |a, b| a && b)
     }
@@ -263,11 +265,15 @@ impl MagicSet {
         self.buckets.par_iter_mut()
         .for_each(|Bucket { map, .. }|{
         	map.par_iter_mut().for_each(move |(_k,(full, delta))|{
-        		full.extend(delta.drain());
+
+                full.extend(delta.drain()); //serial since we have enough
+                // full.par_extend(delta.par_drain());
 
                 //memory is useless now and would be droped later
                 //better do it now in parallel
-                *delta=HashSet::new();
+                delta.shrink_to_fit();
+                debug_assert!(delta.is_empty());
+
         	});
         });
     }
@@ -315,7 +321,7 @@ mod tests {
 
 
         // Also register one bounded key to exercise projection:
-        // p(X,Y,Z), bounds=0b101 => key {0,2}, project middle arg
+        // p(X,Y,Z), bounds=0b101 => key {0,2}, projec?t middle arg
         let bounded = MagicKey {
             atom: atom(1, &[TermId::Var(0), TermId::Var(1), TermId::Var(2)]),
             bounds: 0b101,
@@ -323,7 +329,7 @@ mod tests {
         let kid_bounded = ms.register(bounded);
 
         println!("got magic set entries {:?}",ms.by_pred);
-        println!("with {} buckets",ms.buckets.len());
+        println!("with {} buckets observing {kid_bounded:?}",ms.buckets.len());
 
         // Base candidates (with a duplicate)
         let c10 = const_id(10);
@@ -362,7 +368,7 @@ mod tests {
                             .insert(v.clone());
 
                         if id == kid_bounded && seen_bounded.is_none() {
-                            seen_bounded = Some((ik, v.clone()));
+                            seen_bounded = Some((ik, v));
                         }
                         staged_any = true;
                     }
@@ -374,11 +380,9 @@ mod tests {
             // --- ROTATE: promote prior delta -> full ---
             ms.rotate();
 
-
             // --- IMMEDIATELY PUT NEW DELTA: delta becomes non-empty for the rest of the round ---
             let all_empty = ms.put_new_delta(&mut new);
             assert!(!all_empty, "put_new_delta should report non-empty in round {round}");
-
 
             // Check that generic DELTA is now non-empty (middle-of-round invariant)
             let (_full_mid, delta_mid) = ms.generic_bucket(p);
@@ -386,6 +390,13 @@ mod tests {
                 !delta_mid.is_empty(),
                 "generic DELTA must be non-empty in the middle of round {round}"
             );
+
+            if let Some((ref ik,ref v)) = seen_bounded {
+                let (bfull, bdelta) = &ms.buckets[kid_bounded.0].map[ik];
+                assert!(bfull.contains(&*v) || bdelta.contains(&*v), 
+                "bounded ({kid_bounded:?}) missing expected projection {v:?}");
+            }
+
 
             // The fresh tuple is now “known” (already in DELTA), so additions must return None.
             assert!(
@@ -410,7 +421,10 @@ mod tests {
         // Bounded bucket sanity: at least one FULL projection, empty DELTA
         let (ik, v) = seen_bounded.expect("bounded key should have projected at least once");
         let (bfull, bdelta) = &ms.buckets[kid_bounded.0].map[&ik];
-        assert!(bfull.contains(&*v), "bounded FULL missing expected projection");
+        let mut got: Vec<_> = bfull.iter().collect();
+        got.sort();
+        println!("got {got:?}");
+        assert!(bfull.contains(&*v), "bounded FULL ({kid_bounded:?}) missing expected projection {v:?}");
         assert!(bdelta.is_empty(), "bounded DELTA should be empty after final rotate");
     }
 
@@ -553,4 +567,119 @@ mod tests {
         assert!(cm.match_and_project(&[a]).is_none());
         assert!(cm.match_and_project(&[a, a, a]).is_none());
     }
+
+
+    //============constant stuff
+    #[test]
+    fn constants_only_with_projection_bounds_101() {
+        // p(c1, c2, c3), bounds = 0b101 -> left: {0,2} = [c1,c3], right: {1} = [c2]
+        let c1 = const_id(1);
+        let c2 = const_id(2);
+        let c3 = const_id(3);
+
+        let key = MagicKey {
+            atom: atom(1, &[TermId::Const(c1), TermId::Const(c2), TermId::Const(c3)]),
+            bounds: 0b101,
+        };
+        debug_assert!(key.atom.is_canon());
+        let cm = CompiledMagic::make_me(key);
+
+        let (left, right) = cm.match_and_project(&[c1, c2, c3]).expect("should match");
+        assert_eq!(left, vec![c1, c3].into());
+        assert_eq!(right, vec![c2]);
+
+        // mismatch on any const => no match
+        assert!(cm.match_and_project(&[c1, c3, c2]).is_none());
+    }
+
+    #[test]
+    fn constants_and_vars_projection_bound_const_first() {
+        // p(c1, X, c2), bounds = 0b001 -> left: {0} = [c1], right: {1,2} = [X,c2]
+        let c1 = const_id(11);
+        let c2 = const_id(12);
+
+        let key = MagicKey {
+            atom: atom(2, &[TermId::Const(c1), TermId::Var(0), TermId::Const(c2)]),
+            bounds: 0b001,
+        };
+        debug_assert!(key.atom.is_canon());
+        let cm = CompiledMagic::make_me(key);
+
+        let x = const_id(99);
+        let (left, right) = cm.match_and_project(&[c1, x, c2]).expect("should match");
+        assert_eq!(left,  vec![c1].into());
+        assert_eq!(right, vec![x, c2]);
+
+        // const must align
+        assert!(cm.match_and_project(&[c1, x, x]).is_none()); // last const mismatch
+        assert!(cm.match_and_project(&[x,  x, c2]).is_none()); // first const mismatch
+    }
+
+    #[test]
+    fn repeated_var_with_const_projection() {
+        // p(X, X, c), bounds = 0b110 -> left: {0,1} = [X,X], right: {2} = [c]
+        let c = const_id(7);
+
+        let key = MagicKey {
+            atom: atom(3, &[TermId::Var(0), TermId::Var(0), TermId::Const(c)]),
+            bounds: 0b011,
+        };
+        debug_assert!(key.atom.is_canon());
+        let cm = CompiledMagic::make_me(key);
+
+        let x = const_id(42);
+
+        // matches when X==X
+        let (left, right) = cm.match_and_project(&[x, x, c]).expect("should match");
+        assert_eq!(right, vec![c]);
+        assert_eq!(left,  vec![x, x].into());
+
+        // fails when repeated var differs
+        assert!(cm.match_and_project(&[x, const_id(43), c]).is_none());
+    }
+
+    #[test]
+    fn all_bound_projection_is_empty_tuple() {
+        // p(c1, Y, c2), bounds = 0b111 -> left: {0,1,2} = [c1,Y,c2], right: {} = []
+        let c1 = const_id(21);
+        let c2 = const_id(22);
+
+        let key = MagicKey {
+            atom: atom(4, &[TermId::Const(c1), TermId::Var(0), TermId::Const(c2)]),
+            bounds: 0b111,
+        };
+        debug_assert!(key.atom.is_canon());
+        let cm = CompiledMagic::make_me(key);
+
+        let y = const_id(5);
+        let (left, right) = cm.match_and_project(&[c1, y, c2]).expect("should match");
+        assert_eq!(left,  vec![c1, y, c2].into());
+        assert!(right.is_empty(), "projected (right) must be empty when all positions are bound");
+
+        // const mismatch -> no match
+        assert!(cm.match_and_project(&[c1, y, const_id(99)]).is_none());
+    }
+
+    #[test]
+    fn generic_constants_projection_bounds_000() {
+        // p(c1, c2, c3), bounds = 0 -> left: {} = [], right: {all} = [c1,c2,c3]
+        let c1 = const_id(31);
+        let c2 = const_id(32);
+        let c3 = const_id(33);
+
+        let key = MagicKey {
+            atom: atom(5, &[TermId::Const(c1), TermId::Const(c2), TermId::Const(c3)]),
+            bounds: 0,
+        };
+        debug_assert!(key.atom.is_canon());
+        let cm = CompiledMagic::make_me(key);
+
+        let (left, right) = cm.match_and_project(&[c1, c2, c3]).expect("should match");
+        assert_eq!(left,  Vec::<ConstId>::new().into()); // empty key
+        assert_eq!(right, vec![c1, c2, c3]);
+
+        // mismatch -> no match
+        assert!(cm.match_and_project(&[c1, c3, c2]).is_none());
+    }
+
 }

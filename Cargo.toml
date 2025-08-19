@@ -4,5 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# hashbrown = { version = "0.15"}
+
 hashbrown = { version = "0.15", features = ["rayon"] }
-rayon = "1.11.0"
+rayon = "=1.9.0"
+rayon-core="=1.12.1"
+
+crossbeam-epoch = "=0.9.8"
+

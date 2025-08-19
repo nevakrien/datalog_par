@@ -1,23 +1,27 @@
 {
-  "version": "0.2.0",
-  "configurations": [
-    {
-      "type": "lldb",                // or "cppvsdbg" if on Windows/MSVC
-      "request": "launch",
-      "name": "Debug Rust Test",
-      "cargo": {
-        "args": [
-          "test",
-          "--no-run"
-        ]
-      },
-      "args": [
-        "cycles_prepare_then_rotate_then_put_new_delta",
-        "--nocapture"
-      ],
-      "cwd": "${workspaceFolder}",
-      "program": "${cargo:program}",
-      "stopOnEntry": false
-    }
-  ]
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in library 'datalog_par'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=datalog_par"
+                ],
+                "filter": {
+                    "name": "datalog_par",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
 }
