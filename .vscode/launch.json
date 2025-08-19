@@ -1,0 +1,23 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",                // or "cppvsdbg" if on Windows/MSVC
+      "request": "launch",
+      "name": "Debug Rust Test",
+      "cargo": {
+        "args": [
+          "test",
+          "--no-run"
+        ]
+      },
+      "args": [
+        "cycles_prepare_then_rotate_then_put_new_delta",
+        "--nocapture"
+      ],
+      "cwd": "${workspaceFolder}",
+      "program": "${cargo:program}",
+      "stopOnEntry": false
+    }
+  ]
+}

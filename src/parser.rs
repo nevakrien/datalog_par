@@ -594,6 +594,7 @@ impl AtomId {
         .cloned().collect::<HashSet<_>>();
         vars.len()
     }
+
     pub fn is_canon(&self) -> bool{
         let mut next_var = 0;
         for id in self.args.iter().filter_map(|i| i.try_var()){
@@ -610,17 +611,20 @@ impl AtomId {
     }
 
     pub fn canonize(&mut self) {
-        todo!()
-        // let Some(m) = self.args.iter().filter_map(|x| x.try_var()).min() else {
-        //     return;
-        // };
-        // for x in &mut self.args {
-        //     if x.is_const() {
-        //         continue;
-        //     }
+        let mut next_var = 0;
+        let mut vars = HashMap::new();
+        for a in self.args.iter_mut(){
+            let TermId::Var(v) = a.term() else {
+                continue;
+            };
 
-        //     *x = TermId::Var(x.var_index() - m).into();
-        // }
+            let id = vars.entry(v).or_insert_with(||{
+                next_var+=1;
+                next_var-1
+            });
+
+            *a = TermId::Var(*id).into();
+        }
     }
 }
 

@@ -1,5 +1,3 @@
-use hashbrown::hash_map::Entry;
-use crate::solve::Cheat;
 use crate::parser::AtomId;
 use crate::parser::PredId;
 use crate::parser::ConstId;
@@ -28,6 +26,9 @@ impl MagicKey {
     }
 
     pub fn is_generic(&self)->bool{
+        if self.bounds != 0 {
+            return false;
+        }
     	self.atom.args.iter().enumerate().all(|(i,t)| {
     		if let TermId::Var(v) = t.term() {
     			v==i as u32
@@ -40,6 +41,7 @@ impl MagicKey {
     
 }
 
+#[derive(Debug)]
 pub struct CompiledMagic{
     key:MagicKey,
     var_dup_lookup:HashMap<u32, usize> //var -> first occurance
@@ -112,18 +114,19 @@ impl CompiledMagic {
         let arity = self.key.atom.args.len();
         debug_assert_eq!(self.key.bounds >> arity, 0, "bounds has bits beyond arity");
         
-        let mut key=Vec::with_capacity(arity);
-        let mut val=Vec::with_capacity(arity);
+        let key_len = self.key.bounds.count_ones() as usize;
+        let val_len = (!self.key.bounds & (1u64<<arity -1)).count_ones() as usize;
+        
+        let mut key=Vec::with_capacity(key_len);
+        let mut val=Vec::with_capacity(val_len);
 
         // projection by bounds (pos order)
         for pos in 0..arity {
             if (self.key.bounds >> pos) & 1 == 1 {
                 key.push(c[pos])
-
             }
             else {
                 val.push(c[pos]);
-
             }
         }
 
@@ -132,6 +135,7 @@ impl CompiledMagic {
 }
 
 // Flat bucket with its pattern
+#[derive(Debug)]
 struct Bucket {
     magic: CompiledMagic,
     map: HashMap<InnerKey, FullDelta>,
@@ -140,6 +144,7 @@ struct Bucket {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct KeyId(usize);
 
+#[derive(Debug)]
 pub struct MagicSet {
     buckets: Vec<Bucket>,                        // index by KeyId.0
     by_pred: HashMap<PredId, Vec<KeyId>>,        // pred -> registered KeyIds
@@ -182,15 +187,10 @@ impl MagicSet {
 	    *self.generic.get(&pred).expect("generic KeyId must be pre-registered")
 	}
 
-	fn generic_bucket_mut(&mut self, pred: PredId)->&mut FullDelta{
-		let gid = self.generic_id(pred);
-        let gmap = &mut self.buckets[gid.0].map;
-        gmap
-            .get_mut(&InnerKey::from(&[][..])).unwrap()
-	}
-
-    fn generic_bucket(&self, pred: PredId)->&FullDelta{
+    pub fn generic_bucket(&self, pred: PredId)->&FullDelta{
         let gid = self.generic_id(pred);
+        debug_assert!(self.buckets[gid.0].magic.key.is_generic());
+
         let gmap = &self.buckets[gid.0].map;
         gmap
             .get(&InnerKey::from(&[][..])).unwrap()
@@ -212,19 +212,23 @@ impl MagicSet {
             return None;
         }
 
-        let Some(ids) = self.by_pred.get(&pred) else {
-            panic!()
-        };
-
-        Some(ids.iter().filter_map(move |id| {
+        let ids = &self.by_pred[&pred];
+        Some(ids.iter().filter_map(|id| {
             let magic = &self.buckets[id.0].magic;
 
+            // println!("in id {} with {c:?}", id.0);
             let (k,v) =
                 magic.match_and_project(c)?;
+                // println!("yay worked giving key {k:?}");
                 Some((*id,(k,v.into())))
             
         }).collect())
     }
+
+    pub fn empty_new_set(&self) -> Vec<HashMap<InnerKey, ConstSet>> {
+        (0..self.buckets.len()).map(|_| HashMap::new()).collect()
+    }
+
 
     ///puts in a new set of delta and checks if they are all empty
     //we want to try avoid destructors so the old delta is put back into new
@@ -270,6 +274,8 @@ impl MagicSet {
 
 }
 
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,26 +284,136 @@ mod tests {
     // --- Minimal helpers for non-zero ids ---
     // If PredId/ConstId already expose a public `new(NonZeroU32)` or similar,
     // use that instead of these cfg(test) shims.
-    #[cfg(test)]
-    impl PredId {
-        pub fn from_u32(n: u32) -> Self {
-            Self(NonZeroU32::new(n).expect("PredId must be non-zero"))
-        }
+    fn pred_id(n: u32) -> PredId {
+        // replace with your real way to make a PredId
+        PredId(NonZeroU32::new(n).expect("PredId must be non-zero"))
     }
-    #[cfg(test)]
-    impl ConstId {
-        pub fn from_u32(n: u32) -> Self {
-            Self(NonZeroU32::new(n).expect("ConstId must be non-zero"))
-        }
+    fn const_id(n: u32) -> ConstId {
+        // replace with your real way to make a ConstId
+        ConstId(NonZeroU32::new(n).expect("PredId must be non-zero"))
     }
 
     // tiny helper to build an AtomId without the parser
     fn atom(pred: u32, terms: &[TermId]) -> AtomId {
         AtomId {
-            pred: PredId::from_u32(pred),
+            pred: pred_id(pred),
             args: terms.iter().cloned().map(Into::into).collect(),
         }
     }
+
+    #[test]
+    fn end_to_end() {
+        // predicate p/3
+        let p = pred_id(1);
+        let arity = 3;
+
+        let mut ms = MagicSet::new();
+
+        // Ensure generic bucket (bounds = 0)
+        let gid = ms.ensure_generic(p, arity);
+        assert_eq!(gid.0, 0);
+
+
+        // Also register one bounded key to exercise projection:
+        // p(X,Y,Z), bounds=0b101 => key {0,2}, project middle arg
+        let bounded = MagicKey {
+            atom: atom(1, &[TermId::Var(0), TermId::Var(1), TermId::Var(2)]),
+            bounds: 0b101,
+        };
+        let kid_bounded = ms.register(bounded);
+
+        println!("got magic set entries {:?}",ms.by_pred);
+        println!("with {} buckets",ms.buckets.len());
+
+        // Base candidates (with a duplicate)
+        let c10 = const_id(10);
+        let c20 = const_id(20);
+        let c21 = const_id(21);
+        let c30 = const_id(30);
+        let c31 = const_id(31);
+        let base: Vec<[ConstId; 3]> = vec![
+            [c10, c20, c30],
+            [c10, c20, c31],
+            [c10, c21, c30],
+            [c10, c21, c31],
+            [c10, c20, c30], // dup of #0
+        ];
+
+        // Track a concrete projection to assert bounded FULL later
+        let mut seen_bounded: Option<(InnerKey, Box<[ConstId]>)> = None;
+
+        // 5 rounds: PREP -> ROTATE -> PUT_NEW_DELTA
+        for round in 0..5 {
+            println!("round:{round}", );
+            // --- PREPARE: compute additions and stage into `new` BEFORE rotate ---
+            // Add one fresh tuple per round so each round definitely stages something.
+            let fresh = [c10, const_id(100 + round as u32), c30];
+            let mut cand = base.clone();
+            cand.push(fresh);
+
+            let mut new = ms.empty_new_set();
+            let mut staged_any = false;
+            for c in &cand {
+                if let Some(adds) = ms.additions(p, c) {
+                    for (id, (ik, v)) in adds {
+                        new[id.0]
+                            .entry(ik.clone())
+                            .or_insert_with(ConstSet::new)
+                            .insert(v.clone());
+
+                        if id == kid_bounded && seen_bounded.is_none() {
+                            seen_bounded = Some((ik, v.clone()));
+                        }
+                        staged_any = true;
+                    }
+                }
+            }
+            assert!(staged_any, "must stage at least one tuple per round");
+
+
+            // --- ROTATE: promote prior delta -> full ---
+            ms.rotate();
+
+
+            // --- IMMEDIATELY PUT NEW DELTA: delta becomes non-empty for the rest of the round ---
+            let all_empty = ms.put_new_delta(&mut new);
+            assert!(!all_empty, "put_new_delta should report non-empty in round {round}");
+
+
+            // Check that generic DELTA is now non-empty (middle-of-round invariant)
+            let (_full_mid, delta_mid) = ms.generic_bucket(p);
+            assert!(
+                !delta_mid.is_empty(),
+                "generic DELTA must be non-empty in the middle of round {round}"
+            );
+
+            // The fresh tuple is now “known” (already in DELTA), so additions must return None.
+            assert!(
+                ms.additions(p, &fresh).is_none(),
+                "fresh tuple should be recognized in DELTA in round {round}"
+            );
+        }
+
+        // Final ROTATE to promote last round's DELTA -> FULL
+        ms.rotate();
+
+        // Generic FULL should have 4 distinct from base + 5 fresh = 9
+        let (gfull, gdelta) = ms.generic_bucket(p);
+        assert_eq!(gfull.len(), 4 + 5, "generic FULL cardinality mismatch at end");
+        assert!(gdelta.is_empty(), "generic DELTA should be empty after final rotate");
+
+        // Every tuple we ever tried should now be known
+        for c in base.iter().cloned().chain((0..5).map(|r| [c10, const_id(100 + r), c30])) {
+            assert!(ms.additions(p, &c).is_none(), "tuple {:?} should be known at end", c);
+        }
+
+        // Bounded bucket sanity: at least one FULL projection, empty DELTA
+        let (ik, v) = seen_bounded.expect("bounded key should have projected at least once");
+        let (bfull, bdelta) = &ms.buckets[kid_bounded.0].map[&ik];
+        assert!(bfull.contains(&*v), "bounded FULL missing expected projection");
+        assert!(bdelta.is_empty(), "bounded DELTA should be empty after final rotate");
+    }
+
 
     #[test]
     fn matches_repeated_vars() {
@@ -310,8 +426,8 @@ mod tests {
 
         let cm = CompiledMagic::make_me(key);
 
-        let a = ConstId::from_u32(1);
-        let b = ConstId::from_u32(2);
+        let a = const_id(1);
+        let b = const_id(2);
 
         assert!(cm.matches(&[a, a, b]));   // ok
         assert!(!cm.matches(&[a, b, b]));  // X must equal X
@@ -321,7 +437,7 @@ mod tests {
     #[test]
     fn matches_mix_constants_and_vars() {
         // p(c, X, c)
-        let c = ConstId::from_u32(7);
+        let c = const_id(7);
         let key = MagicKey {
             atom: atom(2, &[TermId::Const(c), TermId::Var(0), TermId::Const(c)]),
             bounds: 0,
@@ -330,8 +446,8 @@ mod tests {
 
         let cm = CompiledMagic::make_me(key);
 
-        let x = ConstId::from_u32(9);
-        let y = ConstId::from_u32(9);
+        let x = const_id(9);
+        let y = const_id(9);
         assert!(cm.matches(&[c, x, c]));              // constants align
         assert!(!cm.matches(&[c, x, y])); // last const mismatch
         assert!(!cm.matches(&[y, x, c])); // first const mismatch
@@ -348,9 +464,9 @@ mod tests {
 
         let cm = CompiledMagic::make_me(key);
 
-        let a = ConstId::from_u32(1);
-        let b = ConstId::from_u32(2);
-        let c = ConstId::from_u32(3);
+        let a = const_id(1);
+        let b = const_id(2);
+        let c = const_id(3);
 
         assert!(cm.matches(&[a, b, c]));
         assert!(cm.matches(&[a, a, a]));
@@ -372,9 +488,9 @@ mod tests {
         assert!(key.atom.is_canon());
         let cm = CompiledMagic::make_me(key);
 
-        let a = ConstId::from_u32(10);
-        let b = ConstId::from_u32(20);
-        let c = ConstId::from_u32(30);
+        let a = const_id(10);
+        let b = const_id(20);
+        let c = const_id(30);
 
         let some = cm.match_and_project(&[a, b, c]).expect("should match");
         let (left, right) = some;
@@ -387,7 +503,7 @@ mod tests {
     #[test]
     fn constants_are_included_where_selected_by_bounds() {
         // p(k, X, k, Y), bounds = 0b0110 -> left: pos 1,2 ; right: pos 0,3
-        let k = ConstId::from_u32(7);
+        let k = const_id(7);
         let key = MagicKey {
             atom: atom(2, &[TermId::Const(k), TermId::Var(0), TermId::Const(k), TermId::Var(1)]),
             bounds: 0b0110,
@@ -395,8 +511,8 @@ mod tests {
         assert!(key.atom.is_canon());
         let cm = CompiledMagic::make_me(key);
 
-        let x = ConstId::from_u32(8);
-        let y = ConstId::from_u32(9);
+        let x = const_id(8);
+        let y = const_id(9);
 
         let (left, right) = cm.match_and_project(&[k, x, k, y]).expect("should match");
         assert_eq!(left,  vec![x, k].into());    // pos 1,2 (includes constant k)
@@ -414,8 +530,8 @@ mod tests {
         assert!(key.atom.is_canon());
         let cm = CompiledMagic::make_me(key);
 
-        let x = ConstId::from_u32(11);
-        let y = ConstId::from_u32(12);
+        let x = const_id(11);
+        let y = const_id(12);
 
         // matches: X == X
         let (left, right) = cm.match_and_project(&[x, x, y]).expect("should match");
@@ -433,7 +549,7 @@ mod tests {
             bounds: 0b01,
         };
         let cm = CompiledMagic::make_me(key);
-        let a = ConstId::from_u32(1);
+        let a = const_id(1);
         assert!(cm.match_and_project(&[a]).is_none());
         assert!(cm.match_and_project(&[a, a, a]).is_none());
     }
