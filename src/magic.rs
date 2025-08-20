@@ -1,3 +1,4 @@
+use std::ops::IndexMut;
 use std::ops::Index;
 use crate::parser::AtomId;
 use crate::parser::PredId;
@@ -143,7 +144,7 @@ pub struct Bucket {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct KeyId(usize);
+pub struct KeyId(pub usize);
 
 #[derive(Debug)]
 pub struct MagicSet {
@@ -156,6 +157,10 @@ pub struct MagicSet {
 impl Index<KeyId> for MagicSet {
 type Output = Bucket;
 fn index(&self, id: KeyId) -> &Bucket{ &self.buckets[id.0] }
+}
+
+impl IndexMut<KeyId> for MagicSet{
+fn index_mut(&mut self, id: KeyId) -> &mut Bucket { &mut self.buckets[id.0]  }
 }
 
 impl MagicSet {
