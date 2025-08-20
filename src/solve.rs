@@ -35,7 +35,9 @@ pub struct RuleSolver {
 }
 
 impl RuleSolver {
-    pub fn apply(&self,elems:&HashSet<Box<QueryElem>>,magic:&MagicSet,delta:bool)->HashSet<Box<QueryElem>>{
+    pub fn apply(&self,elems:&HashSet<Box<QueryElem>>,magic:&MagicSet,do_base:bool)
+    ->(HashSet<Box<QueryElem>>,HashSet<Box<QueryElem>>)
+    {
         elems.par_iter().map_init(
             || Vec::with_capacity(self.key_gathers.len()),
             |key,elem|{
@@ -49,18 +51,33 @@ impl RuleSolver {
                 })
             }
 
-            let Some(spot) = &magic[self.keyid].map.get(&**key) else{
-                return Either::Left(Either::Left(rayon::iter::empty()));
+            //we have a lot of empty cases so...
+            let empty = || {Either::Left(Either::Left(rayon::iter::empty()))};
+
+            let (base,delta) = match &magic[self.keyid].map.get(&**key)  {
+               None=> ( empty(), empty()),
+               Some(spot) =>{ 
+                    let delta = self.run_on(&spot.1,elem);
+                    let base = if do_base {
+                        self.run_on(&spot.0,elem)
+                    }else{  
+                        empty() 
+                    };
+
+                    (base,delta)
+                }
+                
+ 
             };
 
-            //TODO: we do 1 set at time
-            //some times we actually do wana run both
-            //so maybe this can be improved
-            let s = if delta {&spot.1} else{&spot.0};
-            
-            self.run_on(s,elem)
-        }).flatten().collect()
+            base.map(|x| Either::Left(x)).chain(delta.map(|x| Either::Right(x)))
+
+        })
+        .flatten()
+        .partition_map(|x| x)
+
     }
+
 
     fn run_on(&self,s:&HashSet<Box<QueryElem>>,elem:&QueryElem)
     -> Either<Either<Empty<Box<QueryElem>>,impl ParallelIterator<Item=Box<QueryElem>>>,impl ParallelIterator<Item=Box<QueryElem>>>
@@ -98,6 +115,7 @@ impl RuleSolver {
 
 }
 
+
 pub fn combine_sets<T:Hash+Eq>(mut a:HashSet<T>,mut b:HashSet<T>)->HashSet<T>{
     if b.len() > a.len(){
         b.extend(a);
@@ -117,7 +135,9 @@ pub struct FullSolver {
 impl FullSolver {
     pub fn apply(&self,magic:&MagicSet)->HashSet<Box<QueryElem>>{
         //get our first set
-        let start =  &magic[self.start].map[&self.first_key];
+        let Some(start) =  &magic[self.start].map.get(&self.first_key) else{
+            return HashSet::new();
+        };
         
         //we wana run on all cases except base base base ... base
         let (base,delta) = rayon::join(
@@ -132,25 +152,17 @@ impl FullSolver {
 
     fn _apply(&self,elems:&HashSet<Box<QueryElem>>,magic:&MagicSet,used_delta:bool,i:usize)->HashSet<Box<QueryElem>>{
         if i==self.parts.len()-1{
-            let (base,delta) = rayon::join(
-                || if used_delta {
-                        self.parts[i].apply(elems, magic, false)
-                   } else {
-                        HashSet::new()
-                   },
-                || self.parts[i].apply(elems, magic, true),
-            );
+            let (base,delta) = self.parts[i].apply(elems,magic,used_delta);
 
             combine_sets(base,delta)
         }else{
+            let(base,delta) = self.parts[i].apply(elems,magic,true);
             let (base,delta) = rayon::join(
                 || {
-                    let x = self.parts[i].apply(elems,magic,false);
-                    self._apply(&x,magic,used_delta,i+1)
+                    self._apply(&base,magic,used_delta,i+1)
                 },
                 || {
-                    let x = self.parts[i].apply(elems,magic,true);
-                    self._apply(&x,magic,true,i+1)
+                    self._apply(&delta,magic,true,i+1)
                 },
             );
 
@@ -195,6 +207,53 @@ use super::*;
     fn box2(a: ConstId, b: ConstId) -> Box<[ConstId]> { Box::from([a, b]) }
 
 
+    #[test]
+    fn fullsolver_missing_root_key_returns_empty() {
+        // predicate p/2
+        let p = pred_id(1);
+        let mut ms = MagicSet::new();
+
+        // generic bucket, but no entries at all
+        let kid_generic = ms.ensure_generic(p, 2);
+
+        // first_key points to something never inserted
+        let missing_key: Box<[ConstId]> = Box::from([const_id(10), const_id(20)]);
+
+        let solver = FullSolver {
+            start: kid_generic,
+            first_key: missing_key,
+            parts: Box::from([]), // will panic if we index into parts
+        };
+
+        // because parts is empty, apply() should early-out with empty set
+        let out = solver.apply(&ms);
+        assert!(out.is_empty(), "expected empty result for missing root key");
+    }
+
+    #[test]
+    fn rulesolver_missing_inner_key_returns_empty() {
+        // predicate p/1
+        let p = pred_id(1);
+        let mut ms = MagicSet::new();
+        let kid_generic = ms.ensure_generic(p, 1);
+
+        // no entries added to ms[kid_generic].map
+
+        // RuleSolver expects to look up elem[0], but it won't exist
+        let rs = RuleSolver {
+            keyid: kid_generic,
+            key_gathers: Box::from([KeyGather::Var(0)]),
+            val_gathers: Box::from([Gather::Exists(0)]),
+            exists_only: false,
+        };
+
+        let elems: HashSet<Box<QueryElem>> = [Box::from([const_id(42)])].into_iter().collect();
+
+        // previously, rs.apply() would panic indexing a missing key
+        // now, with `.get()` fix, it should just yield empty
+        let (base,delta) = rs.apply(&elems, &ms, false);
+        assert!(base.is_empty() && delta.is_empty(), "expected empty result for missing inner key");
+    }
 
     // Goal: prove `FullSolver::apply` does NOT produce results via a pure
     // FULL→FULL→FULL path in a single iteration.
