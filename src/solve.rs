@@ -5,6 +5,9 @@
  * and all of those functions would be very similar with very littele benifit to switch
  * most of this runs in the same sort of loop so it should get branch predicted fairly quickly
  **/
+use crate::magic::WorkSet;
+use hashbrown::HashMap;
+use crate::parser::PredId;
 use rayon::iter::Empty;
 use std::hash::Hash;
 use hashbrown::HashSet;
@@ -126,6 +129,16 @@ pub fn combine_sets<T:Hash+Eq>(mut a:HashSet<T>,mut b:HashSet<T>)->HashSet<T>{
     }
 }
 
+pub fn combine_maps<T:Hash+Eq, V>(mut a:HashMap<T, V>,mut b:HashMap<T, V>)->HashMap<T, V>{
+    if b.len() > a.len(){
+        b.extend(a);
+        b
+    }else{
+        a.extend(b);
+        a
+    }
+}
+
 pub struct FullSolver {
     start:KeyId,
     first_key:Box<QueryElem>,
@@ -171,11 +184,55 @@ impl FullSolver {
     }
 }
 
+pub struct SolveEngine {
+    pub solvers:Vec<(FullSolver,Vec<PredId>)>,//predid should be unique
+}
+
+impl SolveEngine {
+    pub fn solve_round(&self,magic:&mut MagicSet)->bool{
+        let magic_mut = magic;
+        let magic = &*magic_mut;
+
+        //1 make additon sets
+        let mut new_set = self.solvers.par_iter()
+        //get unique sets
+        .flat_map(
+            |(s,pids)|{
+                let new = s.apply(magic)
+                .into_par_iter()
+                .flat_map(|x| {
+                    pids.par_iter().filter_map(move |pred|{
+                        magic.additions(*pred,&x)
+                    }).flatten()
+                })
+                .fold(|| magic.empty_new_set(),|mut m,(id,(k,v))|{
+                    m[id.0].entry(k).or_default().insert(v);
+                    m
+                });
+                new
+            }
+        )
+        .reduce(|| magic.empty_new_set(), |mut x,y| {
+            x.par_iter_mut()
+            .zip(y.into_par_iter())
+            .for_each(|(x, mut y)|{
+                if y.len() > x.len(){
+                    std::mem::swap(x,&mut y);
+                }
+
+                x.extend(y.drain())
+            });
+            x
+        });
+
+        //2 put them in
+        magic_mut.rotate();
+        magic_mut.put_new_delta(&mut new_set)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-
-
-
     use crate::magic::MagicKey;
 use super::*;
     use hashbrown::HashSet;
@@ -202,9 +259,6 @@ use super::*;
             args: terms.iter().cloned().map(Into::into).collect(),
         }
     }
-
-    fn box1(a: ConstId) -> Box<[ConstId]> { Box::from([a]) }
-    fn box2(a: ConstId, b: ConstId) -> Box<[ConstId]> { Box::from([a, b]) }
 
 
     #[test]
@@ -301,8 +355,8 @@ use super::*;
         let w = const_id(40);
 
         let k_generic = Box::<[ConstId]>::from([]);  // key for generic bucket
-        let k1_key    = box2(x, z);                  // [x,z]
-        let k2_key    = box1(y);                     // [y]
+        let k1_key:Box<QueryElem>    = Box::from([x, z]);                  // [x,z]
+        let k2_key:Box<QueryElem>    = Box::from([y]);                     // [y]
 
         // Seed FULL sets only:
         //
@@ -318,14 +372,14 @@ use super::*;
             .entry(k1_key.clone())
             .or_insert_with(|| (HashSet::new(), HashSet::new()))
             .0
-            .insert(box1(y));
+            .insert(Box::from([y]));
 
         // K2: [y] -> {[w]}
         ms[k2].map
             .entry(k2_key.clone())
             .or_insert_with(|| (HashSet::new(), HashSet::new()))
             .0
-            .insert(box1(w));
+            .insert(Box::from([w]));
 
         // Build the 2-step pipeline:
         // part0: from [x,y,z] via K1(x,z) → [y]
@@ -355,10 +409,10 @@ use super::*;
 
         // Round 2: introduce a DELTA on K2 for the same key [y] so one leg is delta.
         // (If you have `put_new_delta(k2, k2_key.clone(), [box1(w)])`, use that instead.)
-        ms[k2].map.get_mut(&k2_key).unwrap().1.insert(box1(w));
+        ms[k2].map.get_mut(&k2_key).unwrap().1.insert(Box::from([w]));
         let out2 = solver.apply(&ms);
         assert!(
-            out2.contains(&box1(w)),
+            out2.contains(&Box::from([w])),
             "expected [w] once a delta leg exists; got: {out2:?}"
         );
 

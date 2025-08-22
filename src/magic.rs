@@ -15,6 +15,8 @@ pub type Projected = Box<[ConstId]>;     // projection of returned columns (in p
 pub type ConstSet = HashSet<Projected>;
 pub type FullDelta = (ConstSet, ConstSet); // (full, delta)
 
+pub type WorkSet = Vec<HashMap<InnerKey, ConstSet>>;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MagicKey {
     pub atom: AtomId,   // pattern: Const/Var per position
@@ -225,7 +227,7 @@ impl MagicSet {
         }
 
         let ids = &self.by_pred[&pred];
-        Some(ids.iter().filter_map(|id| {
+        Some(ids.par_iter().filter_map(|id| {
             let magic = &self.buckets[id.0].magic;
 
             // println!("in id {} with {c:?}", id.0);
@@ -237,7 +239,7 @@ impl MagicSet {
         }).collect())
     }
 
-    pub fn empty_new_set(&self) -> Vec<HashMap<InnerKey, ConstSet>> {
+    pub fn empty_new_set(&self) -> WorkSet {
         (0..self.buckets.len()).map(|_| HashMap::new()).collect()
     }
 
@@ -246,7 +248,7 @@ impl MagicSet {
     //we want to try avoid destructors so the old delta is put back into new
     pub fn put_new_delta(
         &mut self,
-        new: &mut Vec<HashMap<InnerKey, ConstSet>>
+        new: &mut WorkSet
     ) -> bool {
         assert_eq!(new.len(), self.buckets.len());
 
