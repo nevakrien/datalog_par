@@ -218,7 +218,6 @@ impl MagicSet {
         id
     }
 
-
     pub fn additions(&self, pred: PredId, c: &[ConstId])->Option<Vec<(KeyId,(InnerKey, Box<[ConstId]>))>>{
         let entry = self.generic_bucket(pred);
 

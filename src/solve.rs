@@ -194,25 +194,28 @@ impl SolveEngine {
         let magic = &*magic_mut;
 
         //1 make additon sets
-        let mut new_set = self.solvers.par_iter()
+        let new_set = self.solvers.par_iter()
         //get unique sets
         .flat_map(
             |(s,pids)|{
-                let new = s.apply(magic)
+                s.apply(magic)
                 .into_par_iter()
                 .flat_map(|x| {
                     pids.par_iter().filter_map(move |pred|{
+                        //actual op
                         magic.additions(*pred,&x)
                     }).flatten()
                 })
-                .fold(|| magic.empty_new_set(),|mut m,(id,(k,v))|{
-                    m[id.0].entry(k).or_default().insert(v);
-                    m
-                });
-                new
+                
             }
         )
-        .reduce(|| magic.empty_new_set(), |mut x,y| {
+        //insert into a hashmap
+        .fold(|| magic.empty_new_set(),|mut m,(id,(k,v))|{
+            m[id.0].entry(k).or_default().insert(v);
+            m
+        })
+        .reduce_with(|mut x,y| {
+        	//combine each pair of hashmaps
             x.par_iter_mut()
             .zip(y.into_par_iter())
             .for_each(|(x, mut y)|{
@@ -227,7 +230,11 @@ impl SolveEngine {
 
         //2 put them in
         magic_mut.rotate();
-        magic_mut.put_new_delta(&mut new_set)
+        if let Some(mut new) = new_set {
+        	magic_mut.put_new_delta(&mut new)
+        }else{
+        	true
+        }
     }
 }
 
