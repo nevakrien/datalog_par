@@ -5,7 +5,6 @@
  * and all of those functions would be very similar with very littele benifit to switch
  * most of this runs in the same sort of loop so it should get branch predicted fairly quickly
  **/
-use crate::magic::WorkSet;
 use hashbrown::HashMap;
 use crate::parser::PredId;
 use rayon::iter::Empty;
@@ -189,13 +188,15 @@ pub struct SolveEngine {
 }
 
 impl SolveEngine {
+	//returns true if there was no meaningful thing to add
     pub fn solve_round(&self,magic:&mut MagicSet)->bool{
         let magic_mut = magic;
         let magic = &*magic_mut;
 
-        //1 make additon sets
+        //make additon sets
         let new_set = self.solvers.par_iter()
-        //get unique sets
+        
+        //1. actually run each solver
         .flat_map(
             |(s,pids)|{
                 s.apply(magic)
@@ -205,17 +206,16 @@ impl SolveEngine {
                         //actual op
                         magic.additions(*pred,&x)
                     }).flatten()
-                })
-                
+                })    
             }
         )
-        //insert into a hashmap
+        //2. insert into a hashmap
         .fold(|| magic.empty_new_set(),|mut m,(id,(k,v))|{
             m[id.0].entry(k).or_default().insert(v);
             m
         })
+        //3. combine to 1 hashmap
         .reduce_with(|mut x,y| {
-        	//combine each pair of hashmaps
             x.par_iter_mut()
             .zip(y.into_par_iter())
             .for_each(|(x, mut y)|{
@@ -227,8 +227,7 @@ impl SolveEngine {
             });
             x
         });
-
-        //2 put them in
+        // 4 put it in
         magic_mut.rotate();
         if let Some(mut new) = new_set {
         	magic_mut.put_new_delta(&mut new)
@@ -266,6 +265,131 @@ use super::*;
             args: terms.iter().cloned().map(Into::into).collect(),
         }
     }
+
+    #[test]
+	fn solve_round_no_new_additions_returns_true_and_keeps_delta_empty() {
+	    // --- arrange: empty MagicSet + a FullSolver that yields no results ---
+	    let p = pred_id(1);
+	    let mut ms = MagicSet::new();
+
+	    // Set up a generic bucket so rotate()/delta inspection are well-defined.
+	    // Arity here can be anything consistent with your KB; 1 is convenient.
+	    let kid_generic = ms.ensure_generic(p, 1);
+
+	    // Construct a FullSolver that will yield an empty collection from `apply(&ms)`.
+	    // This mirrors the "missing root key / empty parts" pattern from your other test.
+	    let solver_yields_nothing = FullSolver {
+	        start: kid_generic,
+	        // choose a key that isn't present; combined with empty parts this should be empty
+	        first_key: Box::from([const_id(42)]),
+	        parts: Box::from([]),
+	    };
+
+	    // Wire it into a SolveEngine; pids can be anything — they won’t be touched
+	    // because `apply()` yields nothing.
+	    let engine = SolveEngine {
+	        solvers: vec![(solver_yields_nothing, vec![p])],
+	    };
+
+	    // --- act ---
+	    let changed = engine.solve_round(&mut ms);
+
+	    // --- assert: with no produced items, we expect the empty path:
+	    // reduce_with -> None, then rotate(), then return true
+	    assert!(changed, "expected solve_round() to return true on empty reduce");
+
+	    // Also double-check that the *delta* for the bucket is still empty after the rotation.
+	    let mut any_delta_nonempty = false;
+	    if let Some((full, delta)) = ms[kid_generic].map.get(&Box::from([])) {
+	        if !delta.is_empty() {
+	            any_delta_nonempty = true;
+	        }
+	        // `full` can be anything; we only care that no *new* delta was created.
+	        let _ = full;
+	    } else {
+	        // If there's no entry at all, that's also fine — nothing was added.
+	    }
+
+	    assert!(
+	        !any_delta_nonempty,
+	        "expected no new delta entries when solvers produce no work"
+	    );
+	}
+
+	#[test]
+	fn solve_round_inserts_new_tuple_into_q_from_p_delta_returns_false() {
+	    // predicates p/1 (source) and q/1 (target)
+	    let p = pred_id(1);
+	    let q = pred_id(2);
+
+	    let mut ms = MagicSet::new();
+
+	    // generic buckets (key = [])
+	    let kid_p = ms.ensure_generic(p, 1);
+	    let kid_q = ms.ensure_generic(q, 1);
+
+	    let a = const_id(777);
+	    let empty_key: Box<[ConstId]> = Box::from([]);
+
+	    // Seed p/1 Δ with [a] so we have a delta-leg
+	    ms[kid_p]
+	        .map
+	        .entry(empty_key.clone())
+	        .or_insert_with(|| (HashSet::new(), HashSet::new()))
+	        .1
+	        .insert(Box::from([a]));
+
+	    // Forward the found element (NOT Exists) so arity is correct: [a] -> [a]
+	    let forward_found = RuleSolver {
+	        keyid: kid_p,
+	        key_gathers: Box::from([]),                 // key=[]
+	        val_gathers: Box::from([Gather::Found(0)]), // take v[0] from found set
+	        exists_only: false,
+	    };
+
+	    let fs = FullSolver {
+	        start: kid_p,
+	        first_key: empty_key.clone(),
+	        parts: Box::from([forward_found]),
+	    };
+
+	    // additions() targets q
+	    let engine = SolveEngine {
+	        solvers: vec![(fs, vec![q])],
+	    };
+
+	    // pre: q’s Δ empty
+	    assert!(
+	        ms[kid_q]
+	            .map
+	            .get(&empty_key)
+	            .map(|(_, d)| d.is_empty())
+	            .unwrap_or(true),
+	        "pre: q/1 Δ must be empty"
+	    );
+
+	    // act
+	    let done = engine.solve_round(&mut ms);
+
+	    // assert: since we DID insert, the function must return FALSE (no-op==true, change==false)
+	    assert!(!done, "solve_round() should return false when it performs insertions");
+
+	    // p/1 rotated: Δ empty, FULL has [a]
+	    {
+	        let (pfull, pdelta) = ms[kid_p].map.get(&empty_key).expect("p/1 exists");
+	        assert!(pdelta.is_empty(), "p/1 Δ should be empty after rotate()");
+	        assert!(pfull.contains(&Box::from([a])), "p/1 FULL should contain [a]");
+	    }
+
+	    // q/1 now has new Δ = {[a]}
+	    {
+	        let (_qfull, qdelta) = ms[kid_q].map.get(&empty_key).expect("q/1 exists");
+	        assert!(
+	            qdelta.contains(&Box::from([a])),
+	            "q/1 Δ should contain the newly inserted [a]"
+	        );
+	    }
+	}
 
 
     #[test]
