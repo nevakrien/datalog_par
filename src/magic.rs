@@ -193,7 +193,7 @@ pub struct KeyId(pub usize);
 
 #[derive(Debug)]
 pub struct MagicSet {
-    buckets: Vec<Bucket>,                 // index by KeyId.0
+    pub(crate)buckets: Vec<Bucket>,                 // index by KeyId.0
     by_pred: HashMap<PredId, Vec<KeyId>>, // pred -> registered KeyIds
     generic: HashMap<PredId, KeyId>,      // (pred, arity) -> generic KeyId (bounds=0)
     existing: HashMap<MagicKey, KeyId>,
@@ -284,6 +284,8 @@ impl MagicSet {
         pred: PredId,
         c: &[ConstId],
     ) -> Option<Vec<(KeyId, (InnerKey, Box<[ConstId]>))>> {
+
+        // println!("[MAGIC] checking additions of {pred:?} {c:?}");
         let entry = self.generic_bucket(pred);
 
         if entry.0.contains(c) || entry.1.contains(c) {
@@ -295,9 +297,13 @@ impl MagicSet {
             ids.par_iter()
                 .filter_map(|id| {
                     let magic = &self.buckets[id.0].magic;
+                    // println!("[MAGIC] in {magic:?}\n===== {pred:?} {c:?} =====");
+
 
                     // println!("in id {} with {c:?}", id.0);
                     let (k, v) = magic.match_and_project(c)?;
+                    // println!("=====found {id:?} {k:?} {v:?}=======");
+
                     // println!("found addition with val {v:?}");
                     Some((*id, (k, v.into())))
                 })

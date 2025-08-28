@@ -20,17 +20,20 @@ use std::hash::Hash;
 
 pub type QueryElem = [ConstId];
 
+#[derive(Debug)]
 pub enum Gather {
     Exists(u32),
     Found(u32),
     // Const(ConstId),
 }
 
+#[derive(Debug)]
 pub enum KeyGather {
     Var(u32),
     Const(ConstId),
 }
 
+#[derive(Debug)]
 pub struct RuleSolver {
     pub(crate)keyid: KeyId,
     pub(crate)key_gathers: Box<[KeyGather]>,
@@ -145,6 +148,7 @@ pub fn combine_maps<T: Hash + Eq, V>(mut a: HashMap<T, V>, mut b: HashMap<T, V>)
     }
 }
 
+#[derive(Debug)]
 pub struct FullSolver {
     pub(crate)start: KeyId,
     pub(crate)parts: Box<[RuleSolver]>,
@@ -156,6 +160,7 @@ impl FullSolver {
         let Some(start) = &magic[self.start].map.get(&[][..]) else {
             return HashSet::new();
         };
+        // println!("[SOLVER] start set is {start:?}");
 
         let ans = if !self.parts.is_empty(){
             //we wana run on all cases except base base base ... base
@@ -172,6 +177,8 @@ impl FullSolver {
 
         if let Some(g) = &self.end_gather {
             return ans.par_iter().map(|v|{
+                // println!("[SOLVER] gathering answer for {v:?}");
+
                 g
                 .iter()
                 .map(|g| match g {
@@ -208,6 +215,7 @@ impl FullSolver {
     }
 }
 
+#[derive(Debug)]
 pub struct SolveEngine {
     pub solvers: Vec<(FullSolver, Vec<PredId>)>, //predid should be unique
 }
@@ -237,6 +245,7 @@ impl SolveEngine {
             .fold(
                 || magic.empty_new_set(),
                 |mut m, (id, (k, v))| {
+                    // println!("[SOLVER] merging {k:?}{v:?}");
                     m[id.0].entry(k).or_default().insert(v);
                     m
                 },
@@ -249,15 +258,22 @@ impl SolveEngine {
                         if y.len() > x.len() {
                             std::mem::swap(x, &mut y);
                         }
+                        for (k,mut v) in y.drain(){
+                            let spot = x.entry(k).or_default();
+                            if v.len() > spot.len() {
+                                std::mem::swap(&mut v,spot);
+                            }
+                            spot.extend(v);
+                        }
+                        // println!("[SOLVER] after merge {x:?}");
 
-                        x.extend(y.drain())
                     });
                 x
             });
         // 4 put it in
         magic_mut.rotate();
         if let Some(mut new) = new_set {
-            println!("new facts {new:?}");
+            // println!("new facts {new:?}");
             magic_mut.put_new_delta(&mut new)
         } else {
             true
@@ -265,6 +281,7 @@ impl SolveEngine {
     }
 }
 
+#[derive(Debug)]
 pub struct QuerySolver{
     pub engine:SolveEngine,
     pub magic:MagicSet,
@@ -335,6 +352,8 @@ impl QuerySolver {
         while !self.engine.solve_round(&mut self.magic) {
             ans.extend(self.current().iter().map(|x| self.move_to_full(x)))
         }
+        // println!("[GET] magic {:?}",self.magic.buckets);
+
         ans
     }
 
@@ -675,4 +694,47 @@ mod tests {
             "after rotate, only base remains; single-iteration result should be empty"
         );
     }
+
+    #[test]
+    fn querysolver_iter_get_all() {
+        // closure that builds a fresh, seeded QuerySolver with a single Δ fact [a] for p/1.
+        // Engine is empty so neither `iter` nor `get_all` advances rounds.
+        let make_qs = |a: u32| -> QuerySolver {
+            let p = pred_id(1);
+            let mut ms = MagicSet::new();
+            let kid_p = ms.ensure_generic(p, 1);
+
+            let empty_key: Box<[ConstId]> = Box::from([]);
+            ms[kid_p]
+                .map
+                .entry(empty_key)
+                .or_insert_with(|| (HashSet::new(), HashSet::new()))
+                .1
+                .insert(Box::from([const_id(a)]));
+
+            let engine = SolveEngine { solvers: vec![] };
+            QuerySolver { engine, magic: ms, target: kid_p }
+        };
+
+        // two independent solvers from identical fresh state
+        let mut qs_iter = make_qs(101);
+        let mut qs_all  = make_qs(101);
+
+        // iter yields the seeded Δ once, then stops
+        let via_iter: Vec<_> = qs_iter.iter().collect();
+        assert_eq!(
+            via_iter,
+            vec![Box::from([const_id(101)])],
+            "iter should yield seeded Δ"
+        );
+
+        // get_all collects the same single item
+        let via_all = qs_all.get_all();
+        assert_eq!(
+            via_all,
+            vec![Box::from([const_id(101)])],
+            "get_all should collect seeded Δ"
+        );
+    }
+
 }

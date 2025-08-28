@@ -166,7 +166,7 @@ impl QueryRules {
                 full[k1.0].entry(k2).or_default().insert(v);
             }
         }
-        println!("start facts {full:?}");
+        // println!("start facts {full:?}");
         magic.put_new_delta(&mut full);
 
 
@@ -230,6 +230,7 @@ mod tests_compile_simple {
 
         // Compile a QuerySolver for the query.
         let mut qs = full_compile(&kb, q_enc);
+        println!("compiled solver {:?}",qs.engine);
 
         // Run it to completion and collect all hits.
         // Assumption: `get_all()` returns a collection of boxed ConstId slices,
