@@ -49,6 +49,7 @@ impl MagicKey {
 #[derive(Debug)]
 pub struct CompiledMagic {
     key: MagicKey,
+    skip: u64, //whether or not to skip a value
     var_dup_lookup: HashMap<u32, usize>, //var -> first occurance
 }
 
@@ -77,9 +78,23 @@ impl CompiledMagic {
                 }
             }
         }
+
+        let mut skip = 0u64;
+        for (pos, arg) in key.atom.args.iter().enumerate(){
+            //check if we are in the 1 case we dont skip
+            if let TermId::Var(v) = arg.term(){
+                if var_dup_lookup[&v]==pos{
+                    continue;
+                }
+            }
+
+            skip |= 1u64 << pos;
+        }
+
         Self {
             key,
             var_dup_lookup,
+            skip,
         }
     }
     #[inline]
@@ -127,8 +142,8 @@ impl CompiledMagic {
         // projection by bounds (pos order)
         for pos in 0..arity {
             if (self.key.bounds >> pos) & 1 == 1 {
-                if self.key.atom.args[pos].is_const(){
-                    continue;
+                if (self.skip >> pos) & 1 == 1{
+                    continue
                 }
                 key.push(c[pos])
             } else {
@@ -606,7 +621,7 @@ mod tests {
 
         // matches: X == X
         let (key, value) = cm.match_and_project(&[x, x, y]).expect("should match");
-        assert_eq!(key, vec![x, x].into());
+        assert_eq!(key, vec![x].into());
         assert_eq!(value, vec![y]);
 
         // does not match when repeated var differs
@@ -691,7 +706,7 @@ mod tests {
         // matches when X==X
         let (key, value) = cm.match_and_project(&[x, x, c]).expect("should match");
         assert_eq!(value, vec![c]);
-        assert_eq!(key, vec![x, x].into());
+        assert_eq!(key, vec![x].into());
 
         // fails when repeated var differs
         assert!(cm.match_and_project(&[x, const_id(43), c]).is_none());
