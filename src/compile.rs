@@ -235,6 +235,8 @@
  * it wont be a major cost from overall runtime
 */
 
+use rayon::prelude::*;
+use crate::parser::ConstId;
 use crate::solve::SolveEngine;
 use crate::magic::MagicKey;
 use crate::solve::QuerySolver;
@@ -280,19 +282,24 @@ impl SolvePattern{
 
 pub struct QueryRules {
     pub rules: HashMap<SolvePattern, Vec<PredId>>,
+    pub facts: Vec<(PredId,Box<[ConstId]>)>,
     pub target: AtomId,
 }
 
 impl QueryRules {
     pub fn new(target: AtomId) -> Self {
         let rules = HashMap::new();
-        Self { rules, target }
+        Self { rules,facts:Vec::new(), target }
     }
     pub fn add_rule(&mut self, rule: &RuleId) {
         self.rules
             .entry(SolvePattern::new(rule))
             .or_default()
             .push(rule.head.pred);
+    }
+
+    pub fn add_fact(&mut self, pred:PredId,args:Box<[ConstId]>){
+        self.facts.push((pred,args));
     }
 
     pub fn simple_compile(self) -> QuerySolver{
@@ -308,6 +315,16 @@ impl QueryRules {
         let solvers: Vec<_> = self.rules.into_iter().map(|(k,v)|{
             (k.make_solver(&mut magic),v)
         }).collect();
+
+        let mut full = magic.empty_new_set();
+        for (pred,cons) in &self.facts {
+            let Some(new) = magic.additions(*pred,&*cons) else { continue;};
+            for (k1,(k2,v)) in new {
+                full[k1.0].entry(k2).or_default().insert(v);
+            }
+        }
+        magic.put_new_delta(&mut full);
+
 
         QuerySolver{
             magic,
