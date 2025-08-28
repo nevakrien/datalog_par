@@ -415,7 +415,6 @@ mod tests {
 
         let fs = FullSolver {
             start: kid_p,
-            // first_key: empty_key.clone(),
             parts: Box::from([forward_found]),
         };
 
@@ -462,29 +461,6 @@ mod tests {
             );
         }
     }
-
-    // #[test]
-    // fn fullsolver_missing_root_key_returns_empty() {
-    //     // predicate p/2
-    //     let p = pred_id(1);
-    //     let mut ms = MagicSet::new();
-
-    //     // generic bucket, but no entries at all
-    //     let kid_generic = ms.ensure_generic(p, 2);
-
-    //     // first_key points to something never inserted
-    //     let missing_key: Box<[ConstId]> = Box::from([const_id(10), const_id(20)]);
-
-    //     let solver = FullSolver {
-    //         start: kid_generic,
-    //         first_key: missing_key,
-    //         parts: Box::from([]), // will panic if we index into parts
-    //     };
-
-    //     // because parts is empty, apply() should early-out with empty set
-    //     let out = solver.apply(&ms);
-    //     assert!(out.is_empty(), "expected empty result for missing root key");
-    // }
 
     #[test]
     fn rulesolver_missing_inner_key_returns_empty() {

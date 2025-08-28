@@ -127,6 +127,9 @@ impl CompiledMagic {
         // projection by bounds (pos order)
         for pos in 0..arity {
             if (self.key.bounds >> pos) & 1 == 1 {
+                if self.key.atom.args[pos].is_const(){
+                    continue;
+                }
                 key.push(c[pos])
             } else {
                 val.push(c[pos]);
@@ -554,12 +557,11 @@ mod tests {
         let b = const_id(20);
         let c = const_id(30);
 
-        let some = cm.match_and_project(&[a, b, c]).expect("should match");
-        let (left, right) = some;
+        let (key, value) = cm.match_and_project(&[a, b, c]).expect("should match");
 
-        assert_eq!(left, vec![a, c].into()); // positions 0 and 2
-        assert_eq!(right, vec![b]); // remaining position 1
-        assert_eq!(left.len() + right.len(), 3);
+        assert_eq!(key, vec![a, c].into()); // positions 0 and 2
+        assert_eq!(value, vec![b]); // remaining position 1
+        assert_eq!(key.len() + value.len(), 3);
     }
 
     #[test]
@@ -584,10 +586,9 @@ mod tests {
         let x = const_id(8);
         let y = const_id(9);
 
-        let (left, right) = cm.match_and_project(&[k, x, k, y]).expect("should match");
-        assert_eq!(left, vec![x, k].into()); // pos 1,2 (includes constant k)
-        assert_eq!(right, vec![k, y]); // pos 0,3
-        assert_eq!(left.len() + right.len(), 4);
+        let (key, value) = cm.match_and_project(&[k, x, k, y]).expect("should match");
+        assert_eq!(key, vec![x].into()); // pos 1,2 (includes constant k)
+        assert_eq!(value, vec![k, y]); // pos 0,3
     }
 
     #[test]
@@ -604,9 +605,9 @@ mod tests {
         let y = const_id(12);
 
         // matches: X == X
-        let (left, right) = cm.match_and_project(&[x, x, y]).expect("should match");
-        assert_eq!(left, vec![x, x].into());
-        assert_eq!(right, vec![y]);
+        let (key, value) = cm.match_and_project(&[x, x, y]).expect("should match");
+        assert_eq!(key, vec![x, x].into());
+        assert_eq!(value, vec![y]);
 
         // does not match when repeated var differs
         assert!(cm.match_and_project(&[x, y, y]).is_none());
@@ -642,9 +643,9 @@ mod tests {
         debug_assert!(key.atom.is_canon());
         let cm = CompiledMagic::make_me(key);
 
-        let (left, right) = cm.match_and_project(&[c1, c2, c3]).expect("should match");
-        assert_eq!(left, vec![c1, c3].into());
-        assert_eq!(right, vec![c2]);
+        let (key, value) = cm.match_and_project(&[c1, c2, c3]).expect("should match");
+        assert!(key.is_empty());
+        assert_eq!(value, vec![c2]);
 
         // mismatch on any const => no match
         assert!(cm.match_and_project(&[c1, c3, c2]).is_none());
@@ -664,9 +665,9 @@ mod tests {
         let cm = CompiledMagic::make_me(key);
 
         let x = const_id(99);
-        let (left, right) = cm.match_and_project(&[c1, x, c2]).expect("should match");
-        assert_eq!(left, vec![c1].into());
-        assert_eq!(right, vec![x, c2]);
+        let (key, value) = cm.match_and_project(&[c1, x, c2]).expect("should match");
+        assert!(key.is_empty());
+        assert_eq!(value, vec![x, c2]);
 
         // const must align
         assert!(cm.match_and_project(&[c1, x, x]).is_none()); // last const mismatch
@@ -688,9 +689,9 @@ mod tests {
         let x = const_id(42);
 
         // matches when X==X
-        let (left, right) = cm.match_and_project(&[x, x, c]).expect("should match");
-        assert_eq!(right, vec![c]);
-        assert_eq!(left, vec![x, x].into());
+        let (key, value) = cm.match_and_project(&[x, x, c]).expect("should match");
+        assert_eq!(value, vec![c]);
+        assert_eq!(key, vec![x, x].into());
 
         // fails when repeated var differs
         assert!(cm.match_and_project(&[x, const_id(43), c]).is_none());
@@ -710,10 +711,10 @@ mod tests {
         let cm = CompiledMagic::make_me(key);
 
         let y = const_id(5);
-        let (left, right) = cm.match_and_project(&[c1, y, c2]).expect("should match");
-        assert_eq!(left, vec![c1, y, c2].into());
+        let (key, value) = cm.match_and_project(&[c1, y, c2]).expect("should match");
+        assert_eq!(key, vec![ y].into());
         assert!(
-            right.is_empty(),
+            value.is_empty(),
             "projected (right) must be empty when all positions are bound"
         );
 
@@ -738,9 +739,9 @@ mod tests {
         debug_assert!(key.atom.is_canon());
         let cm = CompiledMagic::make_me(key);
 
-        let (left, right) = cm.match_and_project(&[c1, c2, c3]).expect("should match");
-        assert_eq!(left, Vec::<ConstId>::new().into()); // empty key
-        assert_eq!(right, vec![c1, c2, c3]);
+        let (key, value) = cm.match_and_project(&[c1, c2, c3]).expect("should match");
+        assert_eq!(key, Vec::<ConstId>::new().into()); // empty key
+        assert_eq!(value, vec![c1, c2, c3]);
 
         // mismatch -> no match
         assert!(cm.match_and_project(&[c1, c3, c2]).is_none());
