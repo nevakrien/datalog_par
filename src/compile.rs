@@ -1,240 +1,11 @@
-// //----- Core solve actions-----------
-// use crate::parser::RuleId;
-// use crate::parser::Term32;
-// use crate::parser::TermId;
-// use crate::parser::{AtomId, ConstId, KB, PredId};
-// use rayon::prelude::*;
-
-// use hashbrown::HashSet;
-
-// use hashbrown::HashMap;
-
-// pub type ValPlan = Box<[Option<ConstId>]>;
-// pub type ValPlanRef<'a> = &'a [Option<ConstId>];
-
-// /// full info for magic set lookup
-// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-// pub struct MagicKey {
-//     pub pred: PredId,
-//     pub vars: Box<[Option<ConstId>]>,
-// }
-
-// impl MagicKey {
-//     pub fn from_atom(atom: &AtomId) -> Self {
-//         Self {
-//             pred: atom.pred,
-//             vars: atom.args.iter().map(|a| a.try_const()).collect(),
-//         }
-//     }
-// }
-
-// #[derive(Debug, Clone)]
-// pub struct SolveAction {
-//     pub(crate) magic_template: MagicKey,
-//     pub(crate) magic_insert: Box<[(usize, usize)]>, //found -> template
-//     pub(crate) reduce_indecies: Box<[usize]>,
-// }
-
-// impl SolveAction {
-//     // pub fn apply<'a>(&self,start: impl Iterator<Item = ValPlanRef<'a>>,magic:&HashMap<MagicKey,HashSet<Box<[ConstId]>>>) -> Vec<ValPlan>{
-//     //     let mut ans = Vec::with_capacity(start.size_hint().0);
-
-//     //     for x in start {
-//     //         let mut key = self.magic_template.clone();
-//     //         for (i,j) in &self.magic_insert{
-//     //             key.vars[*j] = x[*i];
-//     //         }
-
-//     //         for item in &magic[&key]{
-//     //             let mut new : ValPlan= x.into();
-//     //             for (i,v) in self.reduce_indecies.iter().zip(item.iter()){
-//     //                 new[*i] = Some(*v);
-//     //             }
-
-//     //             ans.push(new);
-//     //         }
-
-//     //     }
-
-//     //     ans
-//     // }
-
-//     // pub fn apply_par_owned(&self,start: impl ParallelIterator<Item=ValPlan>,magic:&HashMap<MagicKey,HashSet<Box<[ConstId]>>>) -> impl ParallelIterator<Item=ValPlan>{
-//     //     start.flat_map(move |x| {
-//     //         self.run_par_item_owned(x,magic)
-//     //     })
-
-//     // }
-//     // pub fn run_par_item_owned(&self,x: ValPlan,magic:&HashMap<MagicKey,HashSet<Box<[ConstId]>>>) -> impl ParallelIterator<Item=ValPlan>{
-//     //     let mut key = self.magic_template.clone();
-//     //     for (i,j) in &self.magic_insert{
-//     //         key.vars[*j] = x[*i];
-//     //     }
-
-//     //     magic[&key].par_iter().map(move |item|{
-//     //         let mut new : ValPlan = x.clone();
-//     //         for (i,v) in self.reduce_indecies.iter().zip(item.iter()){
-//     //             new[*i] = Some(*v);
-//     //         }
-
-//     //         new
-//     //     })
-//     // }
-
-//     // pub fn apply_par_ref<'a>(&self,start: impl ParallelIterator<Item=ValPlanRef<'a>>,magic:&HashMap<MagicKey,HashSet<Box<[ConstId]>>>) -> impl ParallelIterator<Item=ValPlan>{
-//     //     start.flat_map(|x| {
-//     //         self.run_par_item(x,magic)
-//     //     })
-
-//     // }
-
-//     // pub fn run_par_item<'a>(&self,x: ValPlanRef<'a>,magic:&HashMap<MagicKey,HashSet<Box<[ConstId]>>>) -> impl ParallelIterator<Item=ValPlan>{
-//     //     let mut key = self.magic_template.clone();
-//     //     for (i,j) in &self.magic_insert{
-//     //         key.vars[*j] = x[*i];
-//     //     }
-
-//     //     magic[&key].par_iter().map(|item|{
-//     //         let mut new : ValPlan = x.into();
-//     //         for (i,v) in self.reduce_indecies.iter().zip(item.iter()){
-//     //             new[*i] = Some(*v);
-//     //         }
-
-//     //         new
-//     //     })
-//     // }
-// }
-
-// pub struct SolveRule {
-//     actions: Box<[SolveAction]>,
-//     gather: Box<[Term32]>, //made -> plan
-//     var_count: usize,
-// }
-
-// impl SolveRule {
-//     pub fn simple_compile(rule: &RuleId) -> Self {
-//         let gather = rule.head.args.clone();
-//         let var_count = rule.var_count();
-
-//         let mut bound: Box<[bool]> = (0..var_count).map(|_| false).collect();
-//         let actions = rule
-//             .body
-//             .iter()
-//             .map(|a| {
-//                 let magic_template = MagicKey::from_atom(a);
-
-//                 let mut magic_insert = Vec::with_capacity(rule.body.len());
-//                 let mut reduce_indecies = Vec::with_capacity(rule.body.len());
-
-//                 for (i, t) in a.args.iter().enumerate() {
-//                     let TermId::Var(v) = t.term() else {
-//                         continue;
-//                     };
-//                     let v = v as usize;
-
-//                     if bound[v] {
-//                         if reduce_indecies.contains(&v) {
-//                             //was bound now X X style
-//                             reduce_indecies.push(v);
-//                         } else {
-//                             //was bound previously
-//                             magic_insert.push((v, i)) //found(v)->template(i)
-//                         }
-//                     } else {
-//                         bound[v] = true;
-//                         reduce_indecies.push(v);
-//                     }
-//                 }
-
-//                 let magic_insert = magic_insert.into();
-//                 let reduce_indecies = reduce_indecies.into();
-//                 SolveAction {
-//                     magic_template,
-//                     reduce_indecies,
-//                     magic_insert,
-//                 }
-//             })
-//             .collect();
-//         Self {
-//             gather,
-//             var_count,
-//             actions,
-//         }
-//     }
-//     // pub fn apply(&self,start: &HashSet<ValPlan>,magic:&HashMap<MagicKey,HashSet<Box<[ConstId]>>>) -> Vec<Box<[ConstId]>>{
-//     //     let mut work = self.actions[0].apply(start.iter().map(|x| {&**x}),magic);
-
-//     //     for a in &self.actions[1..]{
-//     //         work = a.apply(work.iter().map(|x| {&**x}),magic);
-//     //     }
-//     //     work.into_iter().map(|x|{
-//     //         self.gather.iter().map(|t|{
-//     //             match t.term() {
-//     //                 TermId::Var(i)=> x[i as usize].unwrap(),
-//     //                 TermId::Const(c) => c,
-//     //             }
-//     //         })
-//     //         .collect()
-//     //     }).collect()
-//     // }
-
-//     // pub fn par_apply<'a>(&self,start: impl ParallelIterator<Item=ValPlanRef<'a>>,magic:&HashMap<MagicKey,HashSet<Box<[ConstId]>>>) -> impl ParallelIterator<Item=Box<[ConstId]>>{
-//     //     //we would of liked to just make 1 giant par iter
-//     //     //rust cant really compile that...
-//     //     //there is also an argument that doing these vec stores are fine
-
-//     //     //there are no dups
-//     //     let mut work: Vec<ValPlan> = self.actions[0].apply_par_ref(start,magic).collect();
-//     //     let mut store = Vec::with_capacity(work.len());//get some memory for us
-
-//     //     for a in &self.actions[1..]{
-//     //         store.par_extend(a.apply_par_ref(work.par_iter().map(|b|{&**b}),magic));
-//     //         work.clear();
-//     //         std::mem::swap(&mut store,&mut work);
-
-//     //     }
-
-//     //     work.into_par_iter().map(|x|{
-//     //         self.gather.iter().map(|t|{
-//     //             match t.term() {
-//     //                 TermId::Var(i)=> x[i as usize].unwrap(),
-//     //                 TermId::Const(c) => c,
-//     //             }
-//     //         })
-//     //         .collect()
-//     //     })
-//     // }
-// }
-
-// pub struct QueryInfo<'kb> {
-//     pub(crate) query: AtomId,
-//     pub(crate) plans: HashMap<PredId, Box<[SolveRule]>>,
-//     pub(crate) kb: &'kb KB,
-// }
-
-// impl<'a> QueryInfo<'a> {
-//     pub fn new(query: AtomId, kb: &'a KB) -> Self {
-//         let preds = kb.trace_pred(query.pred);
-//         let mut plans = HashMap::new();
-
-//         for pred in preds.into_iter() {
-//             let p = kb.producers[&pred]
-//                 .rules
-//                 .iter()
-//                 .map(|r| SolveRule::simple_compile(r))
-//                 .collect();
-//             plans.insert(pred, p);
-//         }
-
-//         Self { query, kb, plans }
-//     }
-// }
-
 /*!
  * note that this module itself does not need to be performent
  * it wont be a major cost from overall runtime
 */
 
+use crate::parser::KB;
+use crate::solve::KeyGather;
+use crate::parser::TermId;
 use crate::solve::RuleSolver;
 use hashbrown::HashSet;
 use rayon::prelude::*;
@@ -268,13 +39,28 @@ impl SolvePattern{
     pub fn make_solver(self,magic:&mut MagicSet)->FullSolver{
         //the start is somewhat obvious so we do it here
         let mut atom =self.conds[0].clone();
-        atom.canonize();
+        let map = atom.canonize();
         let start = magic.register(MagicKey{
             atom,
             bounds:0
         });
 
         let arity = self.head.len();
+        
+        //special case for specifically a fetch quest
+        if self.conds.len() == 1 {
+            let gather = self.head.iter().filter_map(|x|{
+                match x.term() {
+                    TermId::Const(_c)=> None,
+                    TermId::Var(v)  => Some(KeyGather::Var(map[&v])),
+                }
+            }).collect();
+            return FullSolver{
+                start,
+                parts: Box::from([]),
+                end_gather:Some(gather),
+            }
+        }
 
         //main loop is very tricky
         let mut bounds: u64 = 0;
@@ -321,6 +107,20 @@ impl SolvePattern{
     }
 }
 
+pub fn full_compile(kb:&KB,query:AtomId)->QuerySolver{
+    let preds = kb.trace_pred(query.pred);
+    let mut db = QueryRules::new(query);
+    for p in preds {
+        let prod = &kb.producers[&p];
+        for r in &prod.rules{
+            db.add_rule(&r);
+        }
+        for f in &prod.facts{
+            db.add_fact(f.pred,f.args.iter().map(|x| x.try_const().unwrap()).collect())
+        }
+    }
+    db.simple_compile()
+}
 
 pub struct QueryRules {
     pub rules: HashMap<SolvePattern, Vec<PredId>>,
@@ -353,6 +153,7 @@ impl QueryRules {
                 atom:self.target
             }
         );
+        magic[target].map.entry(Box::from([])).or_default();
 
         let solvers: Vec<_> = self.rules.into_iter().map(|(k,v)|{
             (k.make_solver(&mut magic),v)
@@ -365,6 +166,7 @@ impl QueryRules {
                 full[k1.0].entry(k2).or_default().insert(v);
             }
         }
+        println!("start facts {full:?}");
         magic.put_new_delta(&mut full);
 
 
@@ -373,5 +175,86 @@ impl QueryRules {
             engine:SolveEngine{solvers},
             target
         }
+    }
+}
+
+#[cfg(test)]
+mod tests_compile_simple {
+    use super::*; // pulls in full_compile, KB, etc.
+    use crate::parser::{DatalogParser, Statement};
+
+    /// Helper: build a KB from all non-query statements in `src`,
+    /// and also return the (single) parsed query Atom (as `Statement::Query`).
+    fn build_kb_and_query(src: &str) -> (KB, crate::parser::Atom) {
+        let mut parser = DatalogParser::new(src);
+        let statements = parser.parse_all().expect("parse_all failed");
+
+        let mut kb = KB::new();
+        let mut query_atom: Option<crate::parser::Atom> = None;
+
+        for st in &statements {
+            match st {
+                Statement::Query(a) => {
+                    assert!(query_atom.is_none(), "expected exactly one query");
+                    query_atom = Some(a.clone());
+                }
+                _ => {
+                    // facts/rules go straight into the KB
+                    kb.add_statement(st).expect("KB add_statement failed");
+                }
+            }
+        }
+
+        (kb, query_atom.expect("no query found"))
+    }
+
+    #[test]
+    fn single_condition_rule() {
+        // Two direct parent edges out of 'tom' to check we get multiple hits.
+        // Rule is single-condition: ancestor(X,Z) :- parent(X,Z).
+        // Query asks for all Z such that ancestor(tom,Z).
+        let src = r#"
+            parent(tom, bob).
+            parent(tom, charlie).
+            parent(bob, alice).   % irrelevant for the single-step rule
+
+            ancestor(X, Z) :- parent(X, Z).
+
+            ?- ancestor(tom, Who).
+        "#;
+
+        let (kb, q_ast) = build_kb_and_query(src);
+
+        // Encode the query against the KB (checks arity & constant interning, etc.)
+        let q_enc = kb.get_query_encoding(&q_ast).expect("encode query failed");
+
+        // Compile a QuerySolver for the query.
+        let mut qs = full_compile(&kb, q_enc);
+
+        // Run it to completion and collect all hits.
+        // Assumption: `get_all()` returns a collection of boxed ConstId slices,
+        // one row per solution, in the same arity/order as the query head gather.
+        let results = qs.get_all();
+
+        // Map expected constant names to their interned ConstId for robust comparison.
+        let cid = |name: &str| kb.interner().get_const_if_known(&name.into()).unwrap();
+        let tom = cid("tom");
+        let bob = cid("bob");
+        let charlie = cid("charlie");
+
+        // We expect exactly two rows: (tom,bob) and (tom,charlie).
+        // Build a set for order-independent equality.
+        let want: HashSet<Box<[ConstId]>> = [
+            Box::from([tom,bob]),
+            Box::from([tom,charlie]),
+        ]
+        .into_iter()
+        .collect();
+
+        let got: HashSet<Box<[ConstId]>> = results.into_iter().collect();
+
+        assert_eq!(
+            got, want,
+        );
     }
 }

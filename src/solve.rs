@@ -257,6 +257,7 @@ impl SolveEngine {
         // 4 put it in
         magic_mut.rotate();
         if let Some(mut new) = new_set {
+            println!("new facts {new:?}");
             magic_mut.put_new_delta(&mut new)
         } else {
             true
@@ -272,6 +273,7 @@ pub struct QuerySolver{
 
 impl QuerySolver {
     pub fn current(&self)->&HashSet<Box<QueryElem>>{
+        // println!("magic {:?}",self.magic[self.target]);
         &self.magic[self.target].map.get(&[][..]).unwrap().1
     }
 
