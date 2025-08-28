@@ -181,26 +181,26 @@ impl QueryRules {
 #[cfg(test)]
 mod tests_compile_simple {
     use super::*; // pulls in full_compile, KB, etc.
-    use crate::parser::{DatalogParser, Statement};
+    use crate::parser::DatalogParser;
 
     /// Helper: build a KB from all non-query statements in `src`,
     /// and also return the (single) parsed query Atom (as `Statement::Query`).
-    fn build_kb_and_query(src: &str) -> (KB, crate::parser::Atom) {
+    fn build_kb_and_query(src: &str) -> (KB, crate::parser::AtomId) {
         let mut parser = DatalogParser::new(src);
         let statements = parser.parse_all().expect("parse_all failed");
 
         let mut kb = KB::new();
-        let mut query_atom: Option<crate::parser::Atom> = None;
+        let mut query_atom = None;
 
         for st in &statements {
-            match st {
-                Statement::Query(a) => {
+            match kb.add_statement(st).expect("KB add_statement failed") {
+                Some(a) => {
                     assert!(query_atom.is_none(), "expected exactly one query");
-                    query_atom = Some(a.clone());
+                    query_atom = Some(a);
                 }
                 _ => {
                     // facts/rules go straight into the KB
-                    kb.add_statement(st).expect("KB add_statement failed");
+                    
                 }
             }
         }
@@ -223,10 +223,7 @@ mod tests_compile_simple {
             ?- ancestor(tom, Who).
         "#;
 
-        let (kb, q_ast) = build_kb_and_query(src);
-
-        // Encode the query against the KB (checks arity & constant interning, etc.)
-        let q_enc = kb.get_query_encoding(&q_ast).expect("encode query failed");
+        let (kb, q_enc) = build_kb_and_query(src);
 
         // Compile a QuerySolver for the query.
         let mut qs = full_compile(&kb, q_enc);
