@@ -235,6 +235,8 @@
  * it wont be a major cost from overall runtime
 */
 
+use crate::solve::RuleSolver;
+use hashbrown::HashSet;
 use rayon::prelude::*;
 use crate::parser::ConstId;
 use crate::solve::SolveEngine;
@@ -251,7 +253,7 @@ use hashbrown::HashMap;
 
 #[derive(Debug,Clone,PartialEq,Eq,Hash)]
 pub struct SolvePattern{
-    head:Box<[Term32]>,
+    head:Box<[Term32]>,//always canon
     conds:Box<[AtomId]>,
 }
 
@@ -264,6 +266,7 @@ impl SolvePattern{
     }
 
     pub fn make_solver(self,magic:&mut MagicSet)->FullSolver{
+        //the start is somewhat obvious so we do it here
         let mut atom =self.conds[0].clone();
         atom.canonize();
         let start = magic.register(MagicKey{
@@ -271,9 +274,48 @@ impl SolvePattern{
             bounds:0
         });
 
+        let arity = self.head.len();
+
+        //main loop is very tricky
+        let mut bounds: u64 = 0;
+        let mut parts = Vec::new();
+        for (i,a) in self.conds[1..].iter().enumerate() {
+            let needed = |x:&&Term32|{
+                if x.is_const(){
+                    return false;
+                }
+                if self.head.contains(&x) {
+                    return true
+                }
+
+                self.conds[i+1..].iter().any(|v| v.args.contains(&x))
+            };
+
+            let needed: HashSet<_> = a.args.iter().filter(needed).collect();
+            let mut atom = a.clone();
+            let map = atom.canonize();
+
+            let key_len = bounds.count_ones() as usize;
+            let val_len = (!bounds & (1u64 << arity - 1)).count_ones() as usize;
+
+            let key_gathers = Vec::with_capacity(key_len);
+            let val_gathers = Vec::with_capacity(val_len);
+
+            // todo!();
+            let exists_only = val_gathers.is_empty();
+            parts.push(RuleSolver{
+                key_gathers: key_gathers.into(),
+                val_gathers: val_gathers.into(),
+                exists_only,
+                keyid:todo!(),
+            });
+            todo!()
+        }
+
         FullSolver{
             start,
-            parts:todo!()
+            parts: parts.into(),
+            end_gather:todo!()
 
         }
     }

@@ -5,6 +5,7 @@
  * and all of those functions would be very similar with very littele benifit to switch
  * most of this runs in the same sort of loop so it should get branch predicted fairly quickly
  **/
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use crate::magic::KeyId;
 use crate::magic::MagicSet;
@@ -22,7 +23,7 @@ pub type QueryElem = [ConstId];
 pub enum Gather {
     Exists(u32),
     Found(u32),
-    Const(ConstId),
+    // Const(ConstId),
 }
 
 pub enum KeyGather {
@@ -31,10 +32,10 @@ pub enum KeyGather {
 }
 
 pub struct RuleSolver {
-    keyid: KeyId,
-    key_gathers: Box<[KeyGather]>,
-    val_gathers: Box<[Gather]>,
-    exists_only: bool, //whether to stop on the first instance or no
+    pub(crate)keyid: KeyId,
+    pub(crate)key_gathers: Box<[KeyGather]>,
+    pub(crate)val_gathers: Box<[Gather]>,
+    pub(crate)exists_only: bool, //whether to stop on the first instance or no
 }
 
 impl RuleSolver {
@@ -103,21 +104,21 @@ impl RuleSolver {
                         .map(|g| match g {
                             Gather::Exists(u) => elem[*u as usize],
                             Gather::Found(_u) => unreachable!(),
-                            Gather::Const(c) => *c,
+                            // Gather::Const(c) => *c,
                         })
                         .collect(),
                 ))
             });
         }
 
-        //we we have to actually loop
+        //we have to actually loop
         Either::Right(s.par_iter().map(|v| {
             self.val_gathers
                 .iter()
                 .map(|g| match g {
                     Gather::Exists(u) => elem[*u as usize],
                     Gather::Found(u) => v[*u as usize],
-                    Gather::Const(c) => *c,
+                    // Gather::Const(c) => *c,
                 })
                 .collect()
         }))
@@ -147,26 +148,41 @@ pub fn combine_maps<T: Hash + Eq, V>(mut a: HashMap<T, V>, mut b: HashMap<T, V>)
 pub struct FullSolver {
     pub(crate)start: KeyId,
     pub(crate)parts: Box<[RuleSolver]>,
+    pub(crate)end_gather:Option<Box<[KeyGather]>>
 }
 
 impl FullSolver {
     pub fn apply(&self, magic: &MagicSet) -> HashSet<Box<QueryElem>> {
-        //get our first set
-        // let Some(start) = &magic[self.start].map.get(&self.first_key) else {
-        //     return HashSet::new();
-        // };
         let Some(start) = &magic[self.start].map.get(&[][..]) else {
             return HashSet::new();
         };
 
-        //we wana run on all cases except base base base ... base
-        let (base, delta) = rayon::join(
-            || self._apply(&start.0, magic, false, 0),
-            || self._apply(&start.1, magic, true, 0),
-        );
+        let ans = if !self.parts.is_empty(){
+            //we wana run on all cases except base base base ... base
+            let (base, delta) = rayon::join(
+                || self._apply(&start.0, magic, false, 0),
+                || self._apply(&start.1, magic, true, 0),
+            );
 
-        //merge the results
-        combine_sets(base, delta)
+            //merge the results
+            Cow::Owned(combine_sets(base, delta))
+        }else{
+            Cow::Borrowed(&start.1)
+        };
+
+        if let Some(g) = &self.end_gather {
+            return ans.par_iter().map(|v|{
+                g
+                .iter()
+                .map(|g| match g {
+                    KeyGather::Var(u) => v[*u as usize],
+                    KeyGather::Const(c) => *c,
+                })
+                .collect()
+            }).collect();
+        }else{
+            return ans.into_owned()
+        }
     }
 
     fn _apply(
@@ -308,7 +324,7 @@ impl QuerySolver {
         self._print_n(n)
     }
 
-    pub fn print_all(self){
+    pub fn print_all( self){
         self._print_n(usize::MAX)
     }
 
@@ -383,12 +399,8 @@ mod tests {
         // This mirrors the "missing root key / empty parts" pattern from your other test.
         let solver_yields_nothing = FullSolver {
             start: kid_generic,
-            parts: Box::from([RuleSolver{
-                exists_only:true,
-                keyid:kid_generic,
-                key_gathers:Box::from([]),
-                val_gathers:Box::from([]),
-            }]),
+            parts: Box::from([]),
+            end_gather:Some(Box::from([KeyGather::Var(0)]))
         };
 
         // Wire it into a SolveEngine; pids can be anything — they won’t be touched
@@ -459,6 +471,7 @@ mod tests {
         let fs = FullSolver {
             start: kid_p,
             parts: Box::from([forward_found]),
+            end_gather:None
         };
 
         // additions() targets q
@@ -628,6 +641,7 @@ mod tests {
             start: kid_generic,
             // first_key: k_generic.clone(),
             parts: Box::from([part0, part1]),
+            end_gather:None,
         };
 
         // Round 1: only FULL→FULL→FULL is available → should yield ∅.
