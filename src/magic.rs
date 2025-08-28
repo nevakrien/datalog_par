@@ -141,10 +141,11 @@ impl CompiledMagic {
 
         // projection by bounds (pos order)
         for pos in 0..arity {
+            if (self.skip >> pos) & 1 == 1{
+                continue
+            }
+
             if (self.key.bounds >> pos) & 1 == 1 {
-                if (self.skip >> pos) & 1 == 1{
-                    continue
-                }
                 key.push(c[pos])
             } else {
                 val.push(c[pos]);
@@ -602,8 +603,8 @@ mod tests {
         let y = const_id(9);
 
         let (key, value) = cm.match_and_project(&[k, x, k, y]).expect("should match");
-        assert_eq!(key, vec![x].into()); // pos 1,2 (includes constant k)
-        assert_eq!(value, vec![k, y]); // pos 0,3
+        assert_eq!(key, vec![x].into()); // pos 1
+        assert_eq!(value, vec![y]); // pos 3
     }
 
     #[test]
@@ -660,7 +661,7 @@ mod tests {
 
         let (key, value) = cm.match_and_project(&[c1, c2, c3]).expect("should match");
         assert!(key.is_empty());
-        assert_eq!(value, vec![c2]);
+        assert!(value.is_empty());
 
         // mismatch on any const => no match
         assert!(cm.match_and_project(&[c1, c3, c2]).is_none());
@@ -682,7 +683,7 @@ mod tests {
         let x = const_id(99);
         let (key, value) = cm.match_and_project(&[c1, x, c2]).expect("should match");
         assert!(key.is_empty());
-        assert_eq!(value, vec![x, c2]);
+        assert_eq!(value, vec![x]);
 
         // const must align
         assert!(cm.match_and_project(&[c1, x, x]).is_none()); // last const mismatch
@@ -705,7 +706,7 @@ mod tests {
 
         // matches when X==X
         let (key, value) = cm.match_and_project(&[x, x, c]).expect("should match");
-        assert_eq!(value, vec![c]);
+        assert!(value.is_empty());
         assert_eq!(key, vec![x].into());
 
         // fails when repeated var differs
@@ -755,8 +756,8 @@ mod tests {
         let cm = CompiledMagic::make_me(key);
 
         let (key, value) = cm.match_and_project(&[c1, c2, c3]).expect("should match");
-        assert_eq!(key, Vec::<ConstId>::new().into()); // empty key
-        assert_eq!(value, vec![c1, c2, c3]);
+        assert!(key.is_empty()); // empty key
+        assert!(value.is_empty());
 
         // mismatch -> no match
         assert!(cm.match_and_project(&[c1, c3, c2]).is_none());
