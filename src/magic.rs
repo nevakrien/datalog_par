@@ -18,7 +18,7 @@ pub type WorkSet = Vec<HashMap<InnerKey, ConstSet>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MagicKey {
-    pub atom: AtomId,  // pattern: Const/Var per position
+    pub atom: AtomId,  // pattern: Const/Var per position MUST BE CANON
     pub bounds: Bound, // bit i=1 => include tuple[i] in projected result
 }
 
@@ -50,40 +50,36 @@ impl MagicKey {
 pub struct CompiledMagic {
     key: MagicKey,
     skip: u64, //whether or not to skip a value
-    var_dup_lookup: HashMap<u32, usize>, //var -> first occurance
+    var_dup_lookup: Box<[usize]>, //var -> first occurance
 }
 
 impl CompiledMagic {
+    ///requires a canon key
     pub fn make_me(key: MagicKey) -> Self {
-        debug_assert!(key.atom.is_canon());
+        assert!(key.atom.is_canon());
 
         // let mut id = 0;
         // let mut h: HashMap<_, u32> = HashMap::new();
-        let mut var_dup_lookup = HashMap::new();
+        // let mut var_dup_lookup = HashMap::new();
+        let mut var_dup_lookup = Vec::new();
 
         for (pos, arg) in key.atom.args.iter().enumerate() {
             match arg.term() {
                 TermId::Const(_kc) => {}
                 TermId::Var(v) => {
-                    // let id =match h.entry(v) {
-                    //     Entry::Occupied(o) => {*o.get()},
-                    //     Entry::Vacant(v) => {
-                    //         v.insert(id);
-                    //         id+=1;
-                    //         id-1
-                    //     }
-                    // };
-
-                    var_dup_lookup.entry(v).or_insert(pos);
+                    if v as usize >= var_dup_lookup.len() {
+                        var_dup_lookup.push(pos)
+                    }
                 }
             }
         }
-
+        let var_dup_lookup: Box<[usize]> = var_dup_lookup.into();
+        
         let mut skip = 0u64;
         for (pos, arg) in key.atom.args.iter().enumerate(){
             //check if we are in the 1 case we dont skip
             if let TermId::Var(v) = arg.term(){
-                if var_dup_lookup[&v]==pos{
+                if var_dup_lookup[v as usize]==pos{
                     continue;
                 }
             }
@@ -113,7 +109,7 @@ impl CompiledMagic {
                     }
                 }
                 TermId::Var(v) => {
-                    let idx = self.var_dup_lookup[&v];
+                    let idx = self.var_dup_lookup[v as usize];
                     if c[idx as usize] != c[pos] {
                         return false;
                     }
