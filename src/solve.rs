@@ -259,6 +259,11 @@ impl QuerySolver {
         &self.magic[self.target].map.get(&[][..]).unwrap().1
     }
 
+    #[inline]
+    pub fn current_full(&self)->impl Iterator<Item=Box<[ConstId]>>{
+        self.current().iter().map(|x| self.move_to_full(x))
+    }
+
     pub fn solve_round(&mut self) -> Option<&HashSet<Box<QueryElem>>>{
         if self.engine.solve_round(&mut self.magic){
             return None
@@ -267,10 +272,50 @@ impl QuerySolver {
         Some(self.current())
     }
 
+    #[inline]
+    pub fn move_to_full(&self,found:&QueryElem)->Box<[ConstId]>{
+        self.magic[self.target].magic.move_to_full(&[],found).into()
+    }
+
+    #[inline]
+    pub fn map_stop<F:FnMut(Box<[ConstId]>)->bool>(mut self,mut f:F) -> bool{
+        if self.current_full().any(&mut f) {
+            return true;
+        }
+
+        while !self.engine.solve_round(&mut self.magic){
+            if self.current_full().any(&mut f) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    #[inline(always)]
+    fn _print_n(self,mut n:usize){
+        self.map_stop(|x| {
+            if n == 0 {
+                return true
+            }
+            println!("{:?}",x);
+            n-=1;
+            false
+        });
+    }
+
+    pub fn print_n(self,n:usize){
+        self._print_n(n)
+    }
+
+    pub fn print_all(self){
+        self._print_n(usize::MAX)
+    }
+
     pub fn get_all(&mut self) -> Vec<Box<QueryElem>>{
-        let mut ans: Vec<_> = self.current().iter().cloned().collect();
-        while let Some(x) = self.solve_round(){
-            ans.extend(x.iter().cloned())
+        let mut ans: Vec<_> = self.current_full().collect();
+        while !self.engine.solve_round(&mut self.magic) {
+            ans.extend(self.current().iter().map(|x| self.move_to_full(x)))
         }
         ans
     }
@@ -279,20 +324,18 @@ impl QuerySolver {
     #[inline]
     pub fn iter<'a>(&'a mut self) -> impl Iterator<Item = Box<QueryElem>> + 'a {
         // Local buffer of the current round
-        let mut buf: VecDeque<Box<QueryElem>> = self.current().iter().cloned().collect();
+        let mut buf: VecDeque<Box<QueryElem>> = self.current_full().collect();
 
         std::iter::from_fn(move || {
             if let Some(ans) = buf.pop_front(){
                 return Some(ans);
             }
-            // Buffer exhausted: advance a round
-            match self.solve_round() {
-                Some(delta) => {
-                    buf.extend(delta.iter().cloned());
-                    buf.pop_front()
-                }
-                None => None,
+            if self.engine.solve_round(&mut self.magic){
+                return None
             }
+            buf.extend(self.current_full());
+            buf.pop_front()
+
         })
     }
 }

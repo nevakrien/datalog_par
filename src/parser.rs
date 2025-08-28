@@ -622,7 +622,7 @@ impl AtomId {
         true
     }
 
-    pub fn canonize(&mut self) {
+    pub fn canonize(&mut self) -> std::collections::HashMap<u32, u32> {
         let mut next_var = 0;
         let mut vars = HashMap::new();
         for a in self.args.iter_mut() {
@@ -637,6 +637,8 @@ impl AtomId {
 
             *a = TermId::Var(*id).into();
         }
+
+        vars
     }
 }
 
