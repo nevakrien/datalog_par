@@ -2,6 +2,8 @@
 a datalog implementation thats standard complient and fast.
 
 the goal is to try and see if its possible to make an effishent engine for this languge. the target computer is 32+ cores and this matters becuase some algorithems actually benifit from spliting diffrently when you have 2-4 cores.
+we also want to work well on any workload, for now I am naively parallalizing anything that can be.
+there is a strong possibility that most programs would benifit from less parallalisem in key points.
 
 in terms of the parser it seems to be complient.
 

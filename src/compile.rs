@@ -262,23 +262,30 @@ impl SolvePattern{
     }
 
     pub fn make_solver(self,magic:&mut MagicSet)->FullSolver{
-        todo!()
+        let mut atom =self.conds[0].clone();
+        atom.canonize();
+        let start = magic.register(MagicKey{
+            atom,
+            bounds:0
+        });
+
+        FullSolver{
+            start,
+            parts:todo!()
+
+        }
     }
 }
 
 
 pub struct QueryRules {
     pub rules: HashMap<SolvePattern, Vec<PredId>>,
-    pub target: RuleId,
+    pub target: AtomId,
 }
 
 impl QueryRules {
-    pub fn new(target: RuleId) -> Self {
-        let mut rules = HashMap::new();
-
-        //we register to PredId::sentinal the answer
-        //this simplifies retriving things later
-        rules.insert(SolvePattern::new(&target), vec![target.head.pred,PredId::sentinal()]);
+    pub fn new(target: AtomId) -> Self {
+        let rules = HashMap::new();
         Self { rules, target }
     }
     pub fn add_rule(&mut self, rule: &RuleId) {
@@ -291,12 +298,10 @@ impl QueryRules {
     pub fn simple_compile(self) -> QuerySolver{
         let mut magic = MagicSet::new();
 
-        let mut atom = self.target.head;
-        atom.pred = PredId::sentinal();
         let target = magic.register(
             MagicKey{
                 bounds:0,
-                atom
+                atom:self.target
             }
         );
 
