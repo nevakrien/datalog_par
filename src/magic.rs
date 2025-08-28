@@ -58,11 +58,7 @@ impl CompiledMagic {
     pub fn make_me(key: MagicKey) -> Self {
         assert!(key.atom.is_canon());
 
-        // let mut id = 0;
-        // let mut h: HashMap<_, u32> = HashMap::new();
-        // let mut var_dup_lookup = HashMap::new();
         let mut var_dup_lookup = Vec::new();
-
         for (pos, arg) in key.atom.args.iter().enumerate() {
             match arg.term() {
                 TermId::Const(_kc) => {}
@@ -74,7 +70,7 @@ impl CompiledMagic {
             }
         }
         let var_dup_lookup: Box<[usize]> = var_dup_lookup.into();
-        
+
         let mut skip = 0u64;
         for (pos, arg) in key.atom.args.iter().enumerate(){
             //check if we are in the 1 case we dont skip
@@ -93,6 +89,39 @@ impl CompiledMagic {
             skip,
         }
     }
+
+    #[inline]
+    pub fn is_var_skiped(&self,var:u32) -> bool{
+        (self.skip >> self.var_dup_lookup[var as usize]) & 1 == 1
+    }
+
+    //takes a an entry to this magic table and returns the actual args
+    pub fn move_to_full(&self,search_key:&[ConstId],found:&[ConstId],)->Vec<ConstId>{
+        let arity = self.key.atom.args.len();
+        let mut ans = Vec::with_capacity(arity);
+        let mut vars = Vec::with_capacity(arity);
+        let mut found = found.iter();
+        let mut search_key = search_key.iter();
+
+        for (pos,arg) in self.key.atom.args.iter().enumerate(){
+            match arg.term() {
+                TermId::Const(c) =>{ans.push(c);},
+                TermId::Var(id) => {
+                    if id as usize >= vars.len() {
+                        if (self.key.bounds >> pos) & 1 == 1{
+                            vars.push(search_key.next().unwrap())
+                        }else{
+                            vars.push(found.next().unwrap())
+                        }
+                    }
+
+                    ans.push(*vars[id as usize])
+                },
+            }
+        }
+        ans
+    }
+
     #[inline]
     pub fn matches(&self, c: &[ConstId]) -> bool {
         let arity = self.key.atom.args.len();
@@ -758,4 +787,42 @@ mod tests {
         // mismatch -> no match
         assert!(cm.match_and_project(&[c1, c3, c2]).is_none());
     }
+
+    #[test]
+    fn move_to_full() {
+        // Pattern: p(c, X, X), canon, with bounds picking the first X only.
+        // bounds = 0b010 -> bound positions {1}; constants and duplicate vars are skipped.
+        let c = const_id(7);
+        let x = const_id(42);
+
+        let key = MagicKey {
+            atom: atom(1, &[TermId::Const(c), TermId::Var(0), TermId::Var(0)]),
+            bounds: 0b010,
+        };
+        assert!(key.atom.is_canon());
+        let cm = CompiledMagic::make_me(key);
+
+        // Forward projection from a concrete tuple [c, x, x].
+        let (search_key, found) = cm
+            .match_and_project(&[c, x, x])
+            .expect("should match p(c, X, X)");
+
+        // With this pattern/bounds:
+        // - search_key should contain only the first occurrence of X.
+        // - found should be empty (the duplicate X is skipped; the const is skipped).
+        assert_eq!(search_key.as_ref(), &[x]);
+        assert!(found.is_empty());
+
+        // Inverse mapping: rebuild the full tuple.
+        let rebuilt = cm.move_to_full(&search_key, &found);
+        assert_eq!(rebuilt, vec![c, x, x]);
+
+        // Sanity: projecting the rebuilt tuple yields the same (search_key, found).
+        let (search_key2, found2) = cm
+            .match_and_project(&rebuilt)
+            .expect("rebuilt should still match");
+        assert_eq!(search_key2, search_key);
+        assert_eq!(found2, found);
+    }
+
 }
