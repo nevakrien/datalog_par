@@ -493,6 +493,12 @@ pub struct PredId(pub(crate) NonZeroU32);
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
 pub struct ConstId(pub(crate) NonZeroU32);
 
+impl PredId{
+    pub const fn sentinal()->Self{
+        unsafe {Self(NonZeroU32::new_unchecked(u32::MAX))}
+    }
+}
+
 // ---- Compact term representation ----
 // Vars:  0,1,2,...  (clause-local index, 0-based)
 // Const: -id         (id is NonZeroU32, so negative never overlaps vars)
@@ -591,22 +597,25 @@ pub struct AtomId {
 }
 
 impl AtomId {
-
     pub fn var_count(&self) -> usize {
-        let vars = self.args.iter().filter(|i| i.is_var())
-        .cloned().collect::<HashSet<_>>();
+        let vars = self
+            .args
+            .iter()
+            .filter(|i| i.is_var())
+            .cloned()
+            .collect::<HashSet<_>>();
         vars.len()
     }
 
-    pub fn is_canon(&self) -> bool{
+    pub fn is_canon(&self) -> bool {
         let mut next_var = 0;
-        for id in self.args.iter().filter_map(|i| i.try_var()){
+        for id in self.args.iter().filter_map(|i| i.try_var()) {
             if id > next_var {
                 return false;
             }
 
-            if id == next_var{
-                next_var+=1;
+            if id == next_var {
+                next_var += 1;
             }
         }
 
@@ -616,14 +625,14 @@ impl AtomId {
     pub fn canonize(&mut self) {
         let mut next_var = 0;
         let mut vars = HashMap::new();
-        for a in self.args.iter_mut(){
+        for a in self.args.iter_mut() {
             let TermId::Var(v) = a.term() else {
                 continue;
             };
 
-            let id = vars.entry(v).or_insert_with(||{
-                next_var+=1;
-                next_var-1
+            let id = vars.entry(v).or_insert_with(|| {
+                next_var += 1;
+                next_var - 1
             });
 
             *a = TermId::Var(*id).into();
@@ -635,9 +644,9 @@ impl AtomId {
 impl Ord for AtomId {
     fn cmp(&self, other: &Self) -> Ordering {
         let ans = self.args.as_ref().cmp(other.args.as_ref());
-        if ans == Ordering::Equal{
+        if ans == Ordering::Equal {
             self.pred.cmp(&other.pred)
-        }else{
+        } else {
             ans
         }
     }
@@ -1232,4 +1241,3 @@ mod tests_kb {
         }
     }
 }
-

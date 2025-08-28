@@ -229,3 +229,85 @@
 //         Self { query, kb, plans }
 //     }
 // }
+
+/*!
+ * note that this module itself does not need to be performent
+ * it wont be a major cost from overall runtime
+*/
+
+use crate::solve::SolveEngine;
+use crate::magic::MagicKey;
+use crate::solve::QuerySolver;
+use crate::magic::KeyId;
+use crate::magic::MagicSet;
+use crate::solve::FullSolver;
+use crate::parser::AtomId;
+use crate::parser::PredId;
+use crate::parser::RuleId;
+use crate::parser::Term32;
+use hashbrown::HashMap;
+
+#[derive(Debug,Clone,PartialEq,Eq,Hash)]
+pub struct SolvePattern{
+    head:Box<[Term32]>,
+    conds:Box<[AtomId]>,
+}
+
+impl SolvePattern{
+    pub fn new(rule:&RuleId)->Self{
+        Self{
+            head:rule.head.args.clone(),
+            conds:rule.body.clone(),
+        }
+    }
+
+    pub fn make_solver(self,magic:&mut MagicSet)->FullSolver{
+        todo!()
+    }
+}
+
+
+pub struct QueryRules {
+    pub rules: HashMap<SolvePattern, Vec<PredId>>,
+    pub target: RuleId,
+}
+
+impl QueryRules {
+    pub fn new(target: RuleId) -> Self {
+        let mut rules = HashMap::new();
+
+        //we register to PredId::sentinal the answer
+        //this simplifies retriving things later
+        rules.insert(SolvePattern::new(&target), vec![target.head.pred,PredId::sentinal()]);
+        Self { rules, target }
+    }
+    pub fn add_rule(&mut self, rule: &RuleId) {
+        self.rules
+            .entry(SolvePattern::new(rule))
+            .or_default()
+            .push(rule.head.pred);
+    }
+
+    pub fn simple_compile(self) -> QuerySolver{
+        let mut magic = MagicSet::new();
+
+        let mut atom = self.target.head;
+        atom.pred = PredId::sentinal();
+        let target = magic.register(
+            MagicKey{
+                bounds:0,
+                atom
+            }
+        );
+
+        let solvers: Vec<_> = self.rules.into_iter().map(|(k,v)|{
+            (k.make_solver(&mut magic),v)
+        }).collect();
+
+        QuerySolver{
+            magic,
+            engine:SolveEngine{solvers},
+            target
+        }
+    }
+}
