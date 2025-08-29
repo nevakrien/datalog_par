@@ -1,4 +1,4 @@
-// made by claude4 + comments
+//!standard https://www.swi-prolog.org/pldoc/man?section=isosyntax
 use std::fmt;
 use std::iter::Peekable;
 use std::str::Chars;
@@ -229,8 +229,17 @@ impl<'a> DatalogParser<'a> {
     }
 
     fn parse_atom(&mut self) -> Result<Atom, ParseError> {
+        // Read functor / atom name
         let predicate = match self.current_token() {
             Some(token) => {
+                // ISO: atoms (predicate symbols) start with lowercase (or are quoted).
+                // Your lexer doesn't support quoted atoms yet, so check lowercase here.
+                let first = token.chars().next().unwrap_or('\0');
+                if first.is_uppercase() {
+                    return Err(ParseError::InvalidSyntax(
+                        format!("Predicate/atom must start with lowercase (ISO): got '{token}'").into(),
+                    ));
+                }
                 let pred: Box<str> = token.into();
                 self.advance();
                 pred
@@ -238,36 +247,51 @@ impl<'a> DatalogParser<'a> {
             None => return Err(ParseError::UnexpectedEof),
         };
 
-        self.expect_token("(")?;
-
-        let mut args = Vec::new();
-
-        // Handle empty argument list
-        if let Some(token) = self.current_token() {
-            if token == ")" {
-                self.advance();
-                return Ok(Atom { predicate, args });
+        // If no '(' follows, this is a nullary atom: ISO form `p` (not `p()`).
+        match self.current_token() {
+            Some(tok) if tok == "(" => { /* parse non-empty arg list below */ }
+            _ => {
+                return Ok(Atom {
+                    predicate,
+                    args: Vec::new(),
+                })
             }
         }
 
+        // We saw '(' → parse >= 1 arguments; `p()` is NOT ISO.
+        self.advance(); // consume '('
+
+        // Reject `p()` per ISO (compound terms require arity >= 1)
+        if let Some(tok) = self.current_token() {
+            if tok == ")" {
+                return Err(ParseError::InvalidSyntax(
+                    "Nullary predicate must be written without parentheses: use `p`, not `p()` (ISO)".into(),
+                ));
+            }
+        } else {
+            return Err(ParseError::UnexpectedEof);
+        }
+
         // Parse first argument
+        let mut args = Vec::new();
         args.push(self.parse_term()?);
 
-        // Parse remaining arguments
-        while let Some(token) = self.current_token() {
-            if token == ")" {
+        // Parse remaining arguments until ')'
+        while let Some(tok) = self.current_token() {
+            if tok == ")" {
                 self.advance();
                 break;
-            } else if token == "," {
+            } else if tok == "," {
                 self.advance();
                 args.push(self.parse_term()?);
             } else {
-                return Err(ParseError::UnexpectedToken(token.into()));
+                return Err(ParseError::UnexpectedToken(tok.into()));
             }
         }
 
         Ok(Atom { predicate, args })
     }
+
 
     pub fn parse_statement(&mut self) -> Result<Option<Statement>, ParseError> {
         if self.current_token().is_none() {
@@ -344,6 +368,81 @@ impl<'a> DatalogParser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn iso_nullary_head_and_nullaries_in_body() {
+        let src = "ok :- p, r, thing(X,Y).";
+        let mut p = DatalogParser::new(src);
+        let v = p.parse_all().unwrap();
+        match &v[0] {
+            Statement::Rule(r) => {
+                assert_eq!(r.head.predicate.as_ref(), "ok");
+                assert!(r.head.args.is_empty(), "nullary head");
+
+                assert_eq!(r.body.len(), 3);
+                assert_eq!(r.body[0].predicate.as_ref(), "p");
+                assert!(r.body[0].args.is_empty(), "p is nullary");
+
+                assert_eq!(r.body[1].predicate.as_ref(), "r");
+                assert!(r.body[1].args.is_empty(), "r is nullary");
+
+                assert_eq!(r.body[2].predicate.as_ref(), "thing");
+                assert_eq!(r.body[2].args.len(), 2);
+            }
+            _ => panic!("expected a rule"),
+        }
+    }
+
+    #[test]
+    fn iso_nullary_fact_and_query() {
+        let src = "p.\n?- p.";
+        let mut p = DatalogParser::new(src);
+        let v = p.parse_all().unwrap();
+        assert_eq!(v.len(), 2);
+
+        match &v[0] {
+            Statement::Fact(a) => {
+                assert_eq!(a.predicate.as_ref(), "p");
+                assert!(a.args.is_empty());
+            }
+            _ => panic!("expected nullary fact"),
+        }
+        match &v[1] {
+            Statement::Query(a) => {
+                assert_eq!(a.predicate.as_ref(), "p");
+                assert!(a.args.is_empty());
+            }
+            _ => panic!("expected nullary query"),
+        }
+    }
+
+    #[test]
+    fn iso_reject_paren_form_for_nullary() {
+        for src in &["p().", "?- p().", "ok() :- thing(X,Y)."] {
+            let mut p = DatalogParser::new(src);
+            let err = p.parse_all().unwrap_err();
+            match err {
+                ParseError::InvalidSyntax(msg) => {
+                    assert!(msg.contains("Nullary predicate"), "got: {msg}");
+                }
+                other => panic!("expected InvalidSyntax for '{}', got {:?}", src, other),
+            }
+        }
+    }
+
+    #[test]
+    fn iso_predicates_must_start_lowercase() {
+        let mut p = DatalogParser::new("Ok :- p.");
+        let err = p.parse_all().unwrap_err();
+        match err {
+            ParseError::InvalidSyntax(msg) => {
+                assert!(msg.contains("lowercase"), "got: {msg}");
+            }
+            other => panic!("expected InvalidSyntax for uppercase atom, got {:?}", other),
+        }
+    }
+
+
 
     #[test]
     fn test_parse_with_percent_and_slash_comments() {

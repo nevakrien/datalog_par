@@ -89,12 +89,7 @@ impl CompiledMagic {
             skip,
         }
     }
-
-    #[inline]
-    pub fn is_var_skiped(&self,var:u32) -> bool{
-        (self.skip >> self.var_dup_lookup[var as usize]) & 1 == 1
-    }
-
+    
     //takes a an entry to this magic table and returns the actual args
     pub fn move_to_full(&self,search_key:&[ConstId],found:&[ConstId],)->Vec<ConstId>{
         let arity = self.key.atom.args.len();

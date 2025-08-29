@@ -63,8 +63,17 @@ impl SolvePattern{
         }
 
         //main loop is very tricky
-        let mut bounds: u64 = 0;
         let mut parts = Vec::new();
+        let mut var_map = HashMap::<u32,usize>::new();
+
+        //we know all the vars are in the first query are unbound
+        //this means we have them in order for our map
+        for t in self.conds[0].args.iter(){
+            let Some(v) = t.try_var() else{continue};
+            let pos = var_map.len();
+            var_map.entry(v).or_insert(pos);
+        }
+
         for (i,a) in self.conds[1..].iter().enumerate() {
             let needed = |x:&&Term32|{
                 if x.is_const(){
@@ -77,23 +86,51 @@ impl SolvePattern{
                 self.conds[i+1..].iter().any(|v| v.args.contains(&x))
             };
 
-            let needed: HashSet<_> = a.args.iter().filter(needed).collect();
             let mut atom = a.clone();
             let map = atom.canonize();
+            let mut bounded_vars = 0u64;
 
-            let key_len = bounds.count_ones() as usize;
-            let val_len = (!bounds & (1u64 << arity - 1)).count_ones() as usize;
+            let key_gathers = a.args.iter().filter_map(|x| {
+                match x.term(){
+                    TermId::Const(c)=>Some(KeyGather::Const(c)),
+                    TermId::Var(v)=>{
+                        let id = map[&v];
+                        if (bounded_vars >> id)&1==1 {
+                            return None;
+                        }
+                        let loc = var_map.get(&v)?;
+                        bounded_vars |= 1u64 << id;
+                        Some(KeyGather::Var(*loc as u32))
+                    },
+                }
+            }).collect();
 
-            let key_gathers = Vec::with_capacity(key_len);
-            let val_gathers = Vec::with_capacity(val_len);
+            //move the var based bounded to location based
+            let mut bounds = 0;
+            for (i,t) in atom.args.iter().enumerate(){
+                if let Some(v) = t.try_var(){
+                    if (bounded_vars>>v)&1==1{
+                        bounds |= 1u64<<i
+                    }
+                }
+            }
+
+            //now we can get the key
+            let keyid = magic.register(MagicKey{
+                atom,
+                bounds
+            });
+
+            //make sure we take stuff we need
+            let val_gathers = Vec::new();
 
             // todo!();
             let exists_only = val_gathers.is_empty();
             parts.push(RuleSolver{
-                key_gathers: key_gathers.into(),
+                key_gathers: key_gathers,
                 val_gathers: val_gathers.into(),
                 exists_only,
-                keyid:todo!(),
+                keyid,
             });
             todo!()
         }
