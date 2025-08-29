@@ -132,13 +132,13 @@ impl SolvePattern{
                 exists_only,
                 keyid,
             });
-            todo!()
+            // todo!()
         }
 
         FullSolver{
             start,
             parts: parts.into(),
-            end_gather:todo!()
+            end_gather:None,//todo!()
 
         }
     }
@@ -216,7 +216,7 @@ impl QueryRules {
 }
 
 #[cfg(test)]
-mod tests_compile_simple {
+mod test {
     use super::*; // pulls in full_compile, KB, etc.
     use crate::parser::DatalogParser;
 
@@ -292,4 +292,63 @@ mod tests_compile_simple {
             got, want,
         );
     }
+
+    #[test]
+    fn nullary_head_two_body_atoms_true() {
+        // We have at least one chain tom -> bob -> alice,
+        // so grandparent_exists should derive (boolean true).
+        // Multiple chains should NOT create multiple rows: set semantics collapse to one empty tuple.
+        let src = r#"
+            parent(tom, bob).
+            parent(bob, alice).
+
+            % extra noise shouldn't matter
+            parent(tom, charlie).
+            parent(charlie, dana).
+
+            grandparent_exists :- parent(X, Y), parent(Y, Z).
+
+            ?- grandparent_exists.
+        "#;
+
+        let (kb, q_enc) = build_kb_and_query(src);
+
+        let mut qs = full_compile(&kb, q_enc);
+        let results = qs.get_all();
+
+        // For a nullary query, a true result is represented as a single empty-tuple row.
+        let want: HashSet<Box<[ConstId]>> =
+            [Box::<[ConstId]>::from([])].into_iter().collect();
+
+        let got: HashSet<Box<[ConstId]>> = results.into_iter().collect();
+
+        assert_eq!(got, want, "expected boolean success (one empty-tuple row)");
+    }
+
+    #[test]
+    fn nullary_head_two_body_atoms_false() {
+        // No Y such that parent(X,Y) and parent(Y,Z) both hold,
+        // so grandparent_exists should NOT derive (boolean false).
+        let src = r#"
+            parent(tom, bob).
+            % missing the 'parent(bob, _)' link, so no chain completes
+
+            grandparent_exists :- parent(X, Y), parent(Y, Z).
+
+            ?- grandparent_exists.
+        "#;
+
+        let (kb, q_enc) = build_kb_and_query(src);
+
+        let mut qs = full_compile(&kb, q_enc);
+        let results = qs.get_all();
+
+        let got: HashSet<Box<[ConstId]>> = results.into_iter().collect();
+
+        assert!(
+            got.is_empty(),
+            "expected boolean failure (no rows) when no X,Y,Z satisfy the two restrictions"
+        );
+    }
+
 }

@@ -89,7 +89,7 @@ impl CompiledMagic {
             skip,
         }
     }
-    
+
     //takes a an entry to this magic table and returns the actual args
     pub fn move_to_full(&self,search_key:&[ConstId],found:&[ConstId],)->Vec<ConstId>{
         let arity = self.key.atom.args.len();
@@ -154,7 +154,7 @@ impl CompiledMagic {
         debug_assert_eq!(self.key.bounds >> arity, 0, "bounds has bits beyond arity");
 
         let key_len = self.key.bounds.count_ones() as usize;
-        let val_len = (!self.key.bounds & (1u64 << arity - 1)).count_ones() as usize;
+        let val_len = (!self.key.bounds & ((1u64 << arity) - 1)).count_ones() as usize;
 
         let mut key = Vec::with_capacity(key_len);
         let mut val = Vec::with_capacity(val_len);
