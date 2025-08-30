@@ -57,7 +57,9 @@ pub fn collect_var_names(atom: &Atom) -> Vec<&str> {
 }
 
 fn push_print_to_string(s:&mut String,var_names:&[&str],kb:&KB,ids:&[ConstId]){
-	let end = ids.len()-1;
+	debug_assert!(!var_names.is_empty(), "bindings printer called for ground query");
+	debug_assert!(var_names.len()==ids.len());
+	let end = var_names.len()-1;
 	for (i,(x,name)) in ids.iter().zip(var_names.iter()).enumerate(){
 		let r = kb.inter.const_name(*x);
 		s.reserve(name.len()+r.len()+3);
@@ -76,13 +78,13 @@ pub fn print_answers(first:&mut bool,var_names:&[&str],kb:&KB,set:&HashSet<Box<[
 	let mut s = String::new();
 	set.iter().for_each(|ids|{
 		s.clear();	
-		push_print_to_string(&mut s,&*var_names,&kb,ids);
 		if *first {
 			*first = false;
-			print!("{s}");
 		}else{
-			print!(";\n{s}");
+			s.push_str(";\n");
 		}
+		push_print_to_string(&mut s,&*var_names,&kb,ids);
+		print!("{s}");
 		io::stdout().flush().unwrap();
 	});
 }
@@ -119,7 +121,11 @@ pub fn run_and_print<I:Iterator<Item=char>>(parser:&mut DatalogParser<I>,kb:&mut
 			if var_names.is_empty(){
 				println!("false.");
 			}else{
-				print!(".\n");
+				if !first{
+					print!(".\n");
+				}else{
+					println!("false.")
+				}
 			}
 		}
 	}
