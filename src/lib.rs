@@ -272,8 +272,8 @@ mod tests {
 
         // 6 ancestor(X, Y).               -> multiple solutions, order not guaranteed
         let got = bindings_from_block(&blocks[5]);
-        let mut got_set: std::collections::BTreeSet<_> = got.into_iter().collect(); // order-insensitive
-        let mut expected: std::collections::BTreeSet<_> = [
+        let got_set: std::collections::BTreeSet<_> = got.into_iter().collect(); // order-insensitive
+        let expected: std::collections::BTreeSet<_> = [
             "X = alice, Y = bob",
             "X = alice, Y = dana",
             "X = dana, Y = elaine",

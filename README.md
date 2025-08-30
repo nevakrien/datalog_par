@@ -17,8 +17,19 @@ and so this + what i could get from chatbots and articles is used as a refrence.
 
 any non compliance is considered a bug that should be reported.
 
-# TODO
-1. add example programs
-2. figure out a better way to name files
-3. write a proper compile step
+# profiling
+runing something like flamegraph gives completly useless results because of rayon.
+vtune is better suited for this sort of work and we get that most things were inlined and most work is 
+1. vec allocs
+2. comperison
+3. hashing
+4. cross beam stuff
 
+which seems close to the worse situation we could possibly get.
+this is on a benchmark which we should be best suited for.
+
+so there is a real need to reduce the amount of rayon we do in favor of just runin directly.
+
+
+we also most likely want to add instromentation.
+I have a few things in mind but a simple inline(never) on a few things would already go a long way
