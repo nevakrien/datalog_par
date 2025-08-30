@@ -1,0 +1,17 @@
+% --- Facts ---
+parent(alice, bob).
+parent(bob, charlie).
+parent(alice, dana).
+parent(dana, elaine).
+
+% --- Rules ---
+grandparent(X, Z) :- parent(X, Y), parent(Y, Z).
+ancestor(X, Z) :- parent(X, Z).
+ancestor(X, Z) :- parent(X, Y), ancestor(Y, Z).
+
+% --- Queries ---
+?- grandparent(alice, charlie).
+?- grandparent(alice, elaine).
+?- ancestor(alice, elaine).
+?- ancestor(bob, elaine).
+?- ancestor(bob, X).

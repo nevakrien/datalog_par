@@ -114,6 +114,14 @@ impl<'a> DatalogParser<Chars<'a>> {
     }
 }
 impl<I:Iterator<Item = char>> DatalogParser<I>{
+    pub fn from_iter(iter:I)->Self{
+        let mut parser = DatalogParser {
+            chars: Lookahead2::new(iter),
+            current_token: None,
+        };
+        parser.advance_token(); // Initialize with first token
+        parser
+    }
     fn advance_token(&mut self) {
         self.current_token = self.next_token();
     }
