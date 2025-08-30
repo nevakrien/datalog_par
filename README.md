@@ -33,3 +33,63 @@ so there is a real need to reduce the amount of rayon we do in favor of just run
 
 we also most likely want to add instromentation.
 I have a few things in mind but a simple inline(never) on a few things would already go a long way
+
+
+```bash
+vtune -report exec-query -r vtune_results \
+  -rep-knob row-by="/CPUFunction" \
+  -rep-knob column-by="CPUFunctionModule|CPUTimeSummary|CPUTimeSummaryPercentage" \
+  -sort-desc "CPU Time:Self" -format csv \
+| awk -F, '
+  BEGIN {
+    print "ShortName,Module,CPUTime_Self,Percent_Self,FullFunction,CumPercent"
+  }
+  NR==1 {
+    for (i=1;i<=NF;i++) {
+      if($i ~ /^Function$/) f=i
+      if($i ~ /^Module$/) m=i
+      if($i ~ /^CPU Time:Self$/) ts=i
+      if($i ~ /^% of CPU Time:Self/) ps=i
+    }
+    next
+  }
+  NR>1 && $f != "" {
+    gsub(/%/,"",$ps)
+    perc = ($ps+0)
+    cum += perc
+    short=$f
+    sub(/.*::/,"",short)
+    # one single CSV line with exactly 6 fields
+    printf "%s,%s,%s,%s,%.2f%%,%.2f%%\n", short,$f,$m,$ts,perc,cum
+  }' > vtune_summary.csv
+
+```
+
+```bash
+vtune -report exec-query -r vtune_results \
+  -rep-knob row-by="/CPUFunction" \
+  -rep-knob column-by="CPUFunctionModule|CPUTimeSummary|CPUTimeSummaryPercentage" \
+  -sort-desc "CPU Time:Self" -format csv \
+| awk -F, '
+  BEGIN {
+    print "ShortName,Module,CPUTime_Self,Percent_Self"
+  }
+  NR==1 {
+    for (i=1;i<=NF;i++) {
+      if($i ~ /^Function$/) f=i
+      if($i ~ /^Module$/) m=i
+      if($i ~ /^CPU Time:Self$/) ts=i
+      if($i ~ /^% of CPU Time:Self/) ps=i
+    }
+    next
+  }
+  NR>1 && $f != "" {
+    gsub(/%/,"",$ps)
+    perc = ($ps+0)
+    short=$f
+    sub(/.*::/,"",short)
+    # one single CSV line with exactly 6 fields
+    printf "%s,%s,%s,%.2f%%\n", short,$f,$m,perc
+  }' > vtune_summary.csv
+
+```

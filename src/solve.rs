@@ -162,10 +162,15 @@ impl FullSolver {
 
         let ans = if !self.parts.is_empty() {
             //we wana run on all cases except base base base ... base
-            let (base, delta) = rayon::join(
-                || self._apply(&start.0, magic, false, 0),
-                || self._apply(&start.1, magic, true, 0),
+            // let (base, delta) = rayon::join(
+            //     || self._apply(&start.0, magic, false, 0),
+            //     || self._apply(&start.1, magic, true, 0),
+            // );
+            let (base, delta) = (
+                self._apply(&start.0, magic, false, 0),
+                self._apply(&start.1, magic, true, 0),
             );
+
 
             //merge the results
             Cow::Owned(combine_sets(base, delta))
@@ -205,9 +210,13 @@ impl FullSolver {
             combine_sets(base, delta)
         } else {
             let (base, delta) = self.parts[i].apply(elems, magic, true);
-            let (base, delta) = rayon::join(
-                || self._apply(&base, magic, used_delta, i + 1),
-                || self._apply(&delta, magic, true, i + 1),
+            // let (base, delta) = rayon::join(
+            //     || self._apply(&base, magic, used_delta, i + 1),
+            //     || self._apply(&delta, magic, true, i + 1),
+            // );
+            let (base, delta) = (
+                self._apply(&base, magic, used_delta, i + 1),
+                self._apply(&delta, magic, true, i + 1),
             );
 
             combine_sets(base, delta)
@@ -228,7 +237,7 @@ impl SolveEngine {
         let magic = &*magic_mut;
 
         //make additon sets
-        let new_set = self
+        let mut new_set = self
             .solvers
             .par_iter()
             //1. actually run each solver
@@ -242,42 +251,54 @@ impl SolveEngine {
                         .flatten()
                 })
             })
-            //2. insert into a hashmap
+            .collect::<Vec<_>>()
+            .into_iter()
             .fold(
-                || magic.empty_new_set(),
+                magic.empty_new_set(),
                 |mut m, (id, (k, v))| {
                     // println!("[SOLVER] merging {k:?}{v:?}");
                     m[id.0].entry(k).or_default().insert(v);
                     m
                 },
-            )
-            //3. combine to 1 hashmap
-            .reduce_with(|mut x, y| {
-                x.par_iter_mut()
-                    .zip(y.into_par_iter())
-                    .for_each(|(x, mut y)| {
-                        if y.len() > x.len() {
-                            std::mem::swap(x, &mut y);
-                        }
-                        for (k, mut v) in y.drain() {
-                            let spot = x.entry(k).or_default();
-                            if v.len() > spot.len() {
-                                std::mem::swap(&mut v, spot);
-                            }
-                            spot.extend(v);
-                        }
-                        // println!("[SOLVER] after merge {x:?}");
-                    });
-                x
-            });
+            );
+            // //2. insert into a hashmap
+            // .fold(
+            //     || magic.empty_new_set(),
+            //     |mut m, (id, (k, v))| {
+            //         // println!("[SOLVER] merging {k:?}{v:?}");
+            //         m[id.0].entry(k).or_default().insert(v);
+            //         m
+            //     },
+            // )
+            // //3. combine to 1 hashmap
+            // .reduce_with(|mut x, y| {
+            //     x.par_iter_mut()
+            //         .zip(y.into_par_iter())
+            //         .for_each(|(x, mut y)| {
+            //             if y.len() > x.len() {
+            //                 std::mem::swap(x, &mut y);
+            //             }
+            //             for (k, mut v) in y.drain() {
+            //                 let spot = x.entry(k).or_default();
+            //                 if v.len() > spot.len() {
+            //                     std::mem::swap(&mut v, spot);
+            //                 }
+            //                 spot.extend(v);
+            //             }
+            //             // println!("[SOLVER] after merge {x:?}");
+            //         });
+            //     x
+            // });
         // 4 put it in
         magic_mut.rotate();
-        if let Some(mut new) = new_set {
-            // println!("new facts {new:?}");
-            magic_mut.put_new_delta(&mut new)
-        } else {
-            true
-        }
+        magic_mut.put_new_delta(&mut new_set)
+
+        // if let Some(mut new) = new_set {
+        //     // println!("new facts {new:?}");
+        //     magic_mut.put_new_delta(&mut new)
+        // } else {
+        //     true
+        // }
     }
 }
 
