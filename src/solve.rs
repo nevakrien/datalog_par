@@ -237,68 +237,51 @@ impl SolveEngine {
         let magic = &*magic_mut;
 
         //make additon sets
-        let mut new_set = self
-            .solvers
-            .par_iter()
-            //1. actually run each solver
-            .flat_map(|(s, pids)| {
-                s.apply(magic).into_par_iter().flat_map(|x| {
-                    pids.par_iter()
-                        .filter_map(move |pred| {
-                            //actual op
-                            magic.additions(*pred, &x)
-                        })
-                        .flatten()
-                })
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .fold(
-                magic.empty_new_set(),
-                |mut m, (id, (k, v))| {
-                    // println!("[SOLVER] merging {k:?}{v:?}");
-                    m[id.0].entry(k).or_default().insert(v);
-                    m
-                },
+        use crossbeam_channel::unbounded;
+
+        let (s,r) = unbounded();
+        let mut new_set = magic.empty_new_set();
+
+        rayon::join(
+            move || { self
+                .solvers
+                .par_iter()
+                //1. actually run each solver
+                .flat_map(|(s, pids)| {
+                    s.apply(magic).into_par_iter().flat_map(|x| {
+                        pids.par_iter()
+                            .filter_map(move |pred| {
+                                //actual op
+                                magic.additions(*pred, &x)
+                            })
+                            .flatten()
+                    })
+                }).for_each(|x|{
+                    s.send(x).unwrap();
+                });
+                drop(s)
+                // .collect::<Vec<_>>()
+                // .into_iter()
+                // .fold(
+                //     magic.empty_new_set(),
+                //     |mut m, (id, (k, v))| {
+                //         // println!("[SOLVER] merging {k:?}{v:?}");
+                //         m[id.0].entry(k).or_default().insert(v);
+                //         m
+                //     },
+                // );
+            },
+
+            || r.iter().for_each(|(id, (k, v))| {
+                        // println!("[SOLVER] merging {k:?}{v:?}");
+                        new_set[id.0].entry(k).or_default().insert(v);
+                    })
             );
-            // //2. insert into a hashmap
-            // .fold(
-            //     || magic.empty_new_set(),
-            //     |mut m, (id, (k, v))| {
-            //         // println!("[SOLVER] merging {k:?}{v:?}");
-            //         m[id.0].entry(k).or_default().insert(v);
-            //         m
-            //     },
-            // )
-            // //3. combine to 1 hashmap
-            // .reduce_with(|mut x, y| {
-            //     x.par_iter_mut()
-            //         .zip(y.into_par_iter())
-            //         .for_each(|(x, mut y)| {
-            //             if y.len() > x.len() {
-            //                 std::mem::swap(x, &mut y);
-            //             }
-            //             for (k, mut v) in y.drain() {
-            //                 let spot = x.entry(k).or_default();
-            //                 if v.len() > spot.len() {
-            //                     std::mem::swap(&mut v, spot);
-            //                 }
-            //                 spot.extend(v);
-            //             }
-            //             // println!("[SOLVER] after merge {x:?}");
-            //         });
-            //     x
-            // });
+
         // 4 put it in
         magic_mut.rotate();
         magic_mut.put_new_delta(&mut new_set)
 
-        // if let Some(mut new) = new_set {
-        //     // println!("new facts {new:?}");
-        //     magic_mut.put_new_delta(&mut new)
-        // } else {
-        //     true
-        // }
     }
 }
 

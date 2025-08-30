@@ -11,6 +11,7 @@ rayon = "=1.9.0"
 rayon-core="=1.12.1"
 
 crossbeam-epoch = "=0.9.8"
+crossbeam-channel = "0.5.15"
 
 [profile.release]
 debug = true
