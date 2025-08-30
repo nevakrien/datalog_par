@@ -70,7 +70,7 @@ impl SolvePattern {
                 .args
                 .iter()
                 .filter_map(|x| match x.term() {
-                    TermId::Const(c) => Some(KeyGather::Const(c)),
+                    TermId::Const(_c) => None,
                     TermId::Var(v) => {
                         let id = map[&v];
                         if (bounded_vars >> id) & 1 == 1 {
