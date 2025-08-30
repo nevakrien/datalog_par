@@ -38,29 +38,10 @@ impl SolvePattern {
     pub fn make_solver(self, magic: &mut MagicSet) -> FullSolver {
         //the start is somewhat obvious so we do it here
         let mut atom = self.conds[0].clone();
-        let map = atom.canonize();
+        atom.canonize();
         let start = magic.register(MagicKey { atom, bounds: 0 });
-        println!("starting magic set {start:?}");
-
-        //special case for specifically a fetch quest
-        if self.conds.len() == 1 {
-            let gather = self
-                .head
-                .iter()
-                .filter_map(|x| match x.term() {
-                    TermId::Const(_c) => None,
-                    TermId::Var(v) => Some(KeyGather::Var(map[&v])),
-                })
-                .collect();
-            return FullSolver {
-                start,
-                parts: Box::from([]),
-                end_gather: Some(gather),
-            };
-        }
-
-        //main loop is very tricky
-        let mut parts = Vec::new();
+        println!("[COMPILE] starting magic set {start:?}");
+        
         let mut var_map = BTreeMap::<u32, usize>::new();
 
         //we know all the vars are in the first query are unbound
@@ -71,6 +52,29 @@ impl SolvePattern {
             var_map.entry(v).or_insert(pos);
         }
 
+
+        //special case for specifically a fetch quest
+        if self.conds.len() == 1 {
+            let gather = self
+                .head
+                .iter()
+                .map(|x| match x.term() {
+                    TermId::Const(c) => KeyGather::Const(c),
+                    TermId::Var(v) => KeyGather::Var(var_map[&v] as u32),
+                })
+                .collect();
+
+            println!("[COMPILE] only gather: {gather:?}");
+            return FullSolver {
+                start,
+                parts: Box::from([]),
+                end_gather: Some(gather),
+            };
+        }
+
+        //main loop is very tricky
+        let mut parts = Vec::new();
+        
         let need_end_gather = !self.head.iter().all(|x| x.is_var());
 
         for (i, a) in self.conds[1..].iter().enumerate() {
@@ -197,15 +201,22 @@ impl SolvePattern {
                 keyid,
             });
 
-            println!("solver {:?}", parts.last().unwrap());
+            println!("[COMPILE] solver {:?}", parts.last().unwrap());
 
             // todo!()
         }
         let end_gather = if !need_end_gather {
             None
         } else {
-            todo!()
-            // Some(self.head.iter().map(todo!()).collect())
+            let gather = self.head.iter().map(|x|{
+                match x.term(){
+                    TermId::Const(c)=>KeyGather::Const(c),
+                    TermId::Var(v) => KeyGather::Var(var_map[&v] as u32),
+                }
+            }).collect();
+
+            println!("[COMPILE] need gather: {gather:?}");
+            Some(gather)
         };
 
         FullSolver {
@@ -405,6 +416,73 @@ mod test {
             got, want,
             "expected the single length-5 chain from n1 to n6"
         );
+    }
+    //===========CONSTANTS
+    #[test]
+    fn constant_in_head_with_two_limiters() {
+        // Head has a constant; body has two restrictions:
+        // has_two_step_path_to_bob(bob) :- parent(tom, Y), parent(Y, bob).
+        //
+        // There is exactly one chain tom -> charlie -> bob, so the query
+        // should return a single row [bob].
+        let src = r#"
+            parent(tom, charlie).
+            parent(charlie, bob).
+
+            % noise that shouldn't match the rule
+            parent(tom, dana).
+            parent(dana, alice).
+
+            has_two_step_path_to_bob(bob) :- parent(tom, Y), parent(Y, bob).
+
+            ?- has_two_step_path_to_bob(Who).
+        "#;
+
+        let (kb, q_enc) = build_kb_and_query(src);
+
+        let mut qs = full_compile(&kb, q_enc);
+        let results = qs.get_all();
+
+        let cid = |name: &str| kb.interner().get_const_if_known(&name.into()).unwrap();
+        let bob = cid("bob");
+
+        let want: HashSet<Box<[ConstId]>> = [Box::from([bob])].into_iter().collect();
+        let got: HashSet<Box<[ConstId]>> = results.into_iter().collect();
+
+        assert_eq!(
+            got, want,
+            "constant-in-head with two limiters should yield exactly [bob]"
+        );
+    }
+
+    #[test]
+    fn constant_in_head_simple() {
+        // Rule has a constant in the head: target_bob(bob) :- parent(_, bob).
+        // Query asks for the (single) solution; result tuple should be [bob].
+        let src = r#"
+            parent(tom, bob).
+            parent(bob, alice).  % noise
+
+            target_bob(bob) :- parent(_, bob).
+
+            ?- target_bob(Who).
+        "#;
+
+        let (kb, q_enc) = build_kb_and_query(src);
+
+        // Compile & run
+        let mut qs = full_compile(&kb, q_enc);
+        let results = qs.get_all();
+
+        // Expect exactly one row: [bob]
+        let cid = |name: &str| kb.interner().get_const_if_known(&name.into()).unwrap();
+        let bob = cid("bob");
+
+        let want: HashSet<Box<[ConstId]>> =
+            [Box::from([bob])].into_iter().collect();
+        let got: HashSet<Box<[ConstId]>> = results.into_iter().collect();
+
+        assert_eq!(got, want, "head constant must appear in the result tuple");
     }
 
     //===========REAPET VARS
