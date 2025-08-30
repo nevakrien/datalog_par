@@ -3,7 +3,6 @@
  * it wont be a major cost from overall runtime
 */
 
-use std::collections::BTreeMap;
 use crate::magic::MagicKey;
 use crate::magic::MagicSet;
 use crate::parser::AtomId;
@@ -20,6 +19,7 @@ use crate::solve::QuerySolver;
 use crate::solve::RuleSolver;
 use crate::solve::SolveEngine;
 use hashbrown::HashMap;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SolvePattern {
@@ -71,8 +71,10 @@ impl SolvePattern {
             var_map.entry(v).or_insert(pos);
         }
 
+        let need_end_gather = !self.head.iter().all(|x| x.is_var());
+
         for (i, a) in self.conds[1..].iter().enumerate() {
-            let i = i+1;//adjust proper
+            let i = i + 1; //adjust proper
 
             let mut atom = a.clone();
             let map = atom.canonize();
@@ -106,44 +108,80 @@ impl SolvePattern {
             }
 
             //magic key would be made in the end
+            let mut val_gathers: Vec<_>;
 
-            //make sure we take stuff we need
-            let needed = |x: u32| {
-                let x: Term32 = TermId::Var(x).into();
-                if self.head.contains(&x) {
-                    return true;
-                }
-                self.conds[i + 1..].iter().any(|v| v.args.contains(&x))
-            };
-
-            //first get all the vars we already had
-            let mut new_varmap = BTreeMap::new();
-            let mut val_gathers: Vec<_> = var_map
-                .into_iter()
-                .filter(|(id, _)| needed(*id))
-                .enumerate()
-                .map(|(new_loc,(id, old_loc))| {
-                    new_varmap.insert(id,new_loc);
-                    Gather::Exists(old_loc as u32)
-                })
-                .collect();
-            var_map = new_varmap;
-
-            //now add what we found
-            let mut loc_in_val = -1isize;
-            for t in a.args.iter() {
-                let Some(id) = t.try_var() else {
-                    continue;
+            if (i + 1 < self.conds.len()) || need_end_gather {
+                //make sure we take stuff we need
+                let needed = |x: u32| {
+                    let x: Term32 = TermId::Var(x).into();
+                    if self.head.contains(&x) {
+                        return true;
+                    }
+                    self.conds[i + 1..].iter().any(|v| v.args.contains(&x))
                 };
 
-                if (bounded_vars>>map[&id])&1==1{
-                    continue;
+                //first get all the vars we already had
+                let mut new_varmap = BTreeMap::new();
+                val_gathers = var_map
+                    .into_iter()
+                    .filter(|(id, _)| needed(*id))
+                    .enumerate()
+                    .map(|(new_loc, (id, old_loc))| {
+                        new_varmap.insert(id, new_loc);
+                        Gather::Exists(old_loc as u32)
+                    })
+                    .collect();
+                var_map = new_varmap;
+
+                //now add what we found
+                let mut loc_in_val = -1isize;
+                for t in a.args.iter() {
+                    let Some(id) = t.try_var() else {
+                        continue;
+                    };
+
+                    if (bounded_vars >> map[&id]) & 1 == 1 {
+                        continue;
+                    }
+                    loc_in_val += 1;
+
+                    if needed(id) {
+                        if var_map.insert(id, val_gathers.len()).is_none() {
+                            val_gathers.push(Gather::Found(loc_in_val as u32))
+                        }
+                    }
                 }
-                loc_in_val+=1;
-                
-                if needed(id) {
-                    if var_map.insert(id,val_gathers.len()).is_none() {
-                        val_gathers.push(Gather::Found(loc_in_val as u32))
+            } else {
+                val_gathers = self
+                    .head
+                    .iter()
+                    .map(|x| {
+                        let id = x.try_var().unwrap();
+                        if let Some(loc) = var_map.get(&id) {
+                            Gather::Exists(*loc as u32)
+                        } else {
+                            Gather::Found(u32::MAX)
+                        }
+                    })
+                    .collect();
+                var_map.clear();
+
+                //now add what we found
+                let mut loc_in_val = -1isize;
+                for t in a.args.iter() {
+                    let Some(id) = t.try_var() else {
+                        continue;
+                    };
+
+                    if (bounded_vars >> map[&id]) & 1 == 1 {
+                        continue;
+                    }
+                    loc_in_val += 1;
+
+                    for (i, spot) in self.head.iter().enumerate() {
+                        if id == spot.try_var().unwrap() {
+                            val_gathers[i] = Gather::Found(loc_in_val as u32);
+                        }
                     }
                 }
             }
@@ -159,14 +197,15 @@ impl SolvePattern {
                 keyid,
             });
 
-            println!("solver {:?}",parts.last().unwrap());
+            println!("solver {:?}", parts.last().unwrap());
 
             // todo!()
         }
-        let end_gather = if self.head.iter().all(|x| x.is_var()) {
+        let end_gather = if !need_end_gather {
             None
         } else {
             todo!()
+            // Some(self.head.iter().map(todo!()).collect())
         };
 
         FullSolver {
@@ -259,8 +298,8 @@ impl QueryRules {
 #[cfg(test)]
 mod test {
     use super::*; // pulls in full_compile, KB, etc.
-    use hashbrown::HashSet;
     use crate::parser::DatalogParser;
+    use hashbrown::HashSet;
 
     /// Helper: build a KB from all non-query statements in `src`,
     /// and also return the (single) parsed query Atom (as `Statement::Query`).
@@ -313,12 +352,9 @@ mod test {
         let dana = cid("dana");
 
         // Expect the two grand-children of 'tom'.
-        let want: HashSet<Box<[ConstId]>> = [
-            Box::from([tom, alice]),
-            Box::from([tom, dana]),
-        ]
-        .into_iter()
-        .collect();
+        let want: HashSet<Box<[ConstId]>> = [Box::from([tom, alice]), Box::from([tom, dana])]
+            .into_iter()
+            .collect();
 
         let got: HashSet<Box<[ConstId]>> = results.into_iter().collect();
         assert_eq!(got, want);
@@ -365,9 +401,64 @@ mod test {
             [Box::from([n1, n2, n3, n4, n5, n6])].into_iter().collect();
 
         let got: HashSet<Box<[ConstId]>> = results.into_iter().collect();
-        assert_eq!(got, want, "expected the single length-5 chain from n1 to n6");
+        assert_eq!(
+            got, want,
+            "expected the single length-5 chain from n1 to n6"
+        );
     }
 
+    //===========REAPET VARS
+    #[test]
+    fn repeated_vars_in_head_simple_positive() {
+        // dup(X,X) :- parent(X,Y).
+        // Query asks for dup(tom,tom). Should succeed with exactly one row.
+        let src = r#"
+            parent(tom, bob).
+            parent(bob, alice).
+
+            dup(X, X) :- parent(X, Y).
+
+            ?- dup(tom, tom).
+        "#;
+
+        let (kb, q_enc) = build_kb_and_query(src);
+
+        let mut qs = full_compile(&kb, q_enc);
+        let results = qs.get_all();
+
+        let cid = |name: &str| kb.interner().get_const_if_known(&name.into()).unwrap();
+        let tom = cid("tom");
+
+        let want: HashSet<Box<[ConstId]>> = [Box::from([tom, tom])]
+            .into_iter()
+            .collect();
+        let got: HashSet<Box<[ConstId]>> = results.into_iter().collect();
+
+        assert_eq!(got, want, "dup(tom,tom) should be derivable");
+    }
+
+    #[test]
+    fn repeated_vars_in_head_simple_negative_mismatch() {
+        // dup(X,X) :- parent(X,Y).
+        // Query dup(tom,bob) must fail (head enforces equality X = X).
+        let src = r#"
+            parent(tom, bob).
+
+            dup(X, X) :- parent(X, Y).
+
+            ?- dup(tom, bob).
+        "#;
+
+        let (kb, q_enc) = build_kb_and_query(src);
+
+        let mut qs = full_compile(&kb, q_enc);
+        let results = qs.get_all();
+
+        assert!(
+            results.is_empty(),
+            "dup(tom,bob) must not succeed; repeated head vars enforce equality"
+        );
+    }
 
     //============EASY===============================
     #[test]

@@ -5,6 +5,7 @@
  * and all of those functions would be very similar with very littele benifit to switch
  * most of this runs in the same sort of loop so it should get branch predicted fairly quickly
  **/
+
 use crate::magic::KeyId;
 use crate::magic::MagicSet;
 use crate::parser::ConstId;
@@ -880,11 +881,13 @@ mod tests {
             .map
             .get(&empty_key)
             .expect("path6 generic bucket should exist after rotate");
-        assert!(delta_after.is_empty(), "Δ(path6) must be empty after rotate");
+        assert!(
+            delta_after.is_empty(),
+            "Δ(path6) must be empty after rotate"
+        );
         assert!(
             full_after.contains(&expected),
             "FULL(path6) must contain the chain after rotate"
         );
     }
-
 }
