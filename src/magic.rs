@@ -281,7 +281,7 @@ impl MagicSet {
         pred: PredId,
         c: &[ConstId],
     ) -> Option<Vec<(KeyId, (InnerKey, Box<[ConstId]>))>> {
-        println!("[MAGIC] checking additions of {pred:?} {c:?}");
+        //println!("[MAGIC] checking additions of {pred:?} {c:?}");
         let entry = self.generic_bucket(pred);
 
         if entry.0.contains(c) || entry.1.contains(c) {
@@ -293,11 +293,11 @@ impl MagicSet {
             ids.par_iter()
                 .filter_map(|id| {
                     let magic = &self.buckets[id.0].magic;
-                    println!("[MAGIC] in {:?} (with {pred:?} {c:?})",magic.key);
+                    //println!("[MAGIC] in {:?} (with {pred:?} {c:?})",magic.key);
 
                     // println!("in id {} with {c:?}", id.0);
                     let (k, v) = magic.match_and_project(c)?;
-                    println!("=====found {id:?} {k:?} {v:?}=======");
+                    //println!("=====found {id:?} {k:?} {v:?}=======");
 
                     // println!("found addition with val {v:?}");
                     Some((*id, (k, v.into())))

@@ -14,7 +14,7 @@ use crate::parser::Term32;
 use crate::parser::TermId;
 use crate::solve::FullSolver;
 use crate::solve::Gather;
-use crate::solve::KeyGather;
+use crate::solve::EndGather;
 use crate::solve::QuerySolver;
 use crate::solve::SingleSolver;
 use crate::solve::SolveEngine;
@@ -36,13 +36,13 @@ impl SolvePattern {
     }
 
     pub fn make_solver(self, magic: &mut MagicSet) -> FullSolver {
-        println!("[COMPILE] compiling {self:?}");
+        //println!("[COMPILE] compiling {self:?}");
 
         //the start is somewhat obvious so we do it here
         let mut atom = self.conds[0].clone();
         atom.canonize();
         let start = magic.register(MagicKey { atom, bounds: 0 });
-        println!("[COMPILE] starting magic set {start:?}");
+        //println!("[COMPILE] starting magic set {start:?}");
         
         let mut var_map = BTreeMap::<u32, usize>::new();
 
@@ -78,7 +78,7 @@ impl SolvePattern {
                         }
                         let loc = var_map.get(&v)?;
                         bounded_vars |= 1u64 << id;
-                        Some(KeyGather::Var(*loc as u32))
+                        Some(*loc)
                     }
                 })
                 .collect();
@@ -183,19 +183,19 @@ impl SolvePattern {
                 keyid,
             });
 
-            println!("[COMPILE] solver {:?}", parts.last().unwrap());
+            //println!("[COMPILE] solver {:?}", parts.last().unwrap());
         }
         let end_gather = if !need_end_gather {
             None
         } else {
             let gather = self.head.iter().map(|x|{
                 match x.term(){
-                    TermId::Const(c)=>KeyGather::Const(c),
-                    TermId::Var(v) => KeyGather::Var(var_map[&v] as u32),
+                    TermId::Const(c)=>EndGather::Const(c),
+                    TermId::Var(v) => EndGather::Var(var_map[&v] as u32),
                 }
             }).collect();
 
-            println!("[COMPILE] need gather: {gather:?}");
+            //println!("[COMPILE] need gather: {gather:?}");
             Some(gather)
         };
 
@@ -268,7 +268,7 @@ impl QueryRules {
 
         let mut full = magic.empty_new_set();
 
-        println!("[COMPILE] inserting facts");
+        //println!("[COMPILE] inserting facts");
         for (pred, cons) in &self.facts {
             let Some(new) = magic.additions(*pred, &*cons) else {
                 continue;
