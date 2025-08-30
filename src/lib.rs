@@ -57,40 +57,69 @@ pub fn collect_var_names(atom: &Atom) -> Vec<&str> {
 }
 
 fn push_print_to_string(s:&mut String,var_names:&[&str],kb:&KB,ids:&[ConstId]){
-	if ids.is_empty(){
-		s.push_str("yes");
-		return;
-	}
-	for (x,name) in ids.iter().zip(var_names.iter()){
+	let end = ids.len()-1;
+	for (i,(x,name)) in ids.iter().zip(var_names.iter()).enumerate(){
 		let r = kb.inter.const_name(*x);
+		s.reserve(name.len()+r.len()+3);
+
 		s.push_str(name);
 		s.push_str(" = ");
 		s.push_str(r);
+
+		if i!=end{
+			s.push_str(", ")
+		}
 	}
 }
 
-pub fn print_answers(var_names:&[&str],kb:&KB,set:&HashSet<Box<[ConstId]>>){
-	// set.par_iter().for_each_init(|| String::new(),|s,ids|{
+pub fn print_answers(first:&mut bool,var_names:&[&str],kb:&KB,set:&HashSet<Box<[ConstId]>>){
 	let mut s = String::new();
 	set.iter().for_each(|ids|{
 		s.clear();	
 		push_print_to_string(&mut s,&*var_names,&kb,ids);
-		println!("{s}");
+		if *first {
+			*first = false;
+			print!("{s}");
+		}else{
+			print!(";\n{s}");
+		}
 		io::stdout().flush().unwrap();
 	});
 }
 
 pub fn run_and_print<I:Iterator<Item=char>>(parser:&mut DatalogParser<I>,kb:&mut KB) -> Result<(),DatalogError>{
-	while let Some(statment) = parser.parse_statement()?{
+	'outer:while let Some(statment) = parser.parse_statement()?{
 		if let Some(query) = kb.add_statement(&statment)?{
 			let Statement::Query(atom) = statment else {panic!();};
 			let var_names = collect_var_names(&atom);
 
 			let mut q = full_compile(&kb, query);
-			print_answers(&*var_names,&kb,q.current());
+
+			let mut first = true;
+			if var_names.is_empty(){
+				if !q.current().is_empty(){
+					println!("true.");
+					continue 'outer; 
+				}
+			}else{
+				print_answers(&mut first,&*var_names,&kb,q.current());
+			}
 			
 			while let Some(x) = q.solve_round(){
-				print_answers(&*var_names,&kb,x);
+				if var_names.is_empty(){
+					if !x.is_empty(){
+						println!("true.");
+						continue 'outer; 
+					}
+				}else{
+					print_answers(&mut first,&*var_names,&kb,x);
+				}
+			}
+
+			if var_names.is_empty(){
+				println!("false.");
+			}else{
+				print!(".\n");
 			}
 		}
 	}
