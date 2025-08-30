@@ -35,14 +35,14 @@ pub enum KeyGather {
 }
 
 #[derive(Debug)]
-pub struct RuleSolver {
+pub struct SingleSolver {
     pub(crate) keyid: KeyId,
     pub(crate) key_gathers: Box<[KeyGather]>,
     pub(crate) val_gathers: Box<[Gather]>,
     pub(crate) exists_only: bool, //whether to stop on the first instance or no
 }
 
-impl RuleSolver {
+impl SingleSolver {
     pub fn apply(
         &self,
         elems: &HashSet<Box<QueryElem>>,
@@ -152,7 +152,7 @@ pub fn combine_maps<T: Hash + Eq, V>(mut a: HashMap<T, V>, mut b: HashMap<T, V>)
 #[derive(Debug)]
 pub struct FullSolver {
     pub(crate) start: KeyId,
-    pub(crate) parts: Box<[RuleSolver]>,
+    pub(crate) parts: Box<[SingleSolver]>,
     pub(crate) end_gather: Option<Box<[KeyGather]>>,
 }
 
@@ -226,6 +226,7 @@ pub struct SolveEngine {
 impl SolveEngine {
     //returns true if there was no meaningful thing to add
     pub fn solve_round(&self, magic: &mut MagicSet) -> bool {
+        println!("[SOLVE] runing round with {magic:?}", );
         let magic_mut = magic;
         let magic = &*magic_mut;
 
@@ -466,7 +467,7 @@ mod tests {
             .insert(Box::from([a]));
 
         // Forward the found element (NOT Exists) so arity is correct: [a] -> [a]
-        let forward_found = RuleSolver {
+        let forward_found = SingleSolver {
             keyid: kid_p,
             key_gathers: Box::from([]),                 // key=[]
             val_gathers: Box::from([Gather::Found(0)]), // take v[0] from found set
@@ -524,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn rulesolver_missing_inner_key_returns_empty() {
+    fn SingleSolver_missing_inner_key_returns_empty() {
         // predicate p/1
         let p = pred_id(1);
         let mut ms = MagicSet::new();
@@ -532,8 +533,8 @@ mod tests {
 
         // no entries added to ms[kid_generic].map
 
-        // RuleSolver expects to look up elem[0], but it won't exist
-        let rs = RuleSolver {
+        // SingleSolver expects to look up elem[0], but it won't exist
+        let rs = SingleSolver {
             keyid: kid_generic,
             key_gathers: Box::from([KeyGather::Var(0)]),
             val_gathers: Box::from([Gather::Exists(0)]),
@@ -628,14 +629,14 @@ mod tests {
 
         // Build the 2-step pipeline:
         // part0: from [x,y,z] via K1(x,z) → [y]
-        let part0 = RuleSolver {
+        let part0 = SingleSolver {
             keyid: k1,
             key_gathers: Box::from([KeyGather::Var(0), KeyGather::Var(2)]), // [x,z]
             val_gathers: Box::from([Gather::Found(0)]),                     // emit [y]
             exists_only: false,
         };
         // part1: from [y] via K2(y) → [w]
-        let part1 = RuleSolver {
+        let part1 = SingleSolver {
             keyid: k2,
             key_gathers: Box::from([KeyGather::Var(0)]), // [y]
             val_gathers: Box::from([Gather::Found(0)]),  // emit [w]
@@ -795,19 +796,19 @@ mod tests {
         // Each step uses:
         //   key_gathers: previous last var (A then B then C ... as index)
         //   val_gathers: Exists(..) for the carried prefix + Found(0) to append the new node
-        let part0 = RuleSolver {
+        let part0 = SingleSolver {
             keyid: kid_edge,
             key_gathers: Box::from([KeyGather::Var(0)]),
             val_gathers: Box::from([Gather::Exists(0), Gather::Found(0)]), // [A,B]
             exists_only: false,
         };
-        let part1 = RuleSolver {
+        let part1 = SingleSolver {
             keyid: kid_edge,
             key_gathers: Box::from([KeyGather::Var(1)]),
             val_gathers: Box::from([Gather::Exists(0), Gather::Exists(1), Gather::Found(0)]), // [A,B,C]
             exists_only: false,
         };
-        let part2 = RuleSolver {
+        let part2 = SingleSolver {
             keyid: kid_edge,
             key_gathers: Box::from([KeyGather::Var(2)]),
             val_gathers: Box::from([
@@ -818,7 +819,7 @@ mod tests {
             ]), // [A,B,C,D]
             exists_only: false,
         };
-        let part3 = RuleSolver {
+        let part3 = SingleSolver {
             keyid: kid_edge,
             key_gathers: Box::from([KeyGather::Var(3)]),
             val_gathers: Box::from([
@@ -830,7 +831,7 @@ mod tests {
             ]), // [A,B,C,D,E]
             exists_only: false,
         };
-        let part4 = RuleSolver {
+        let part4 = SingleSolver {
             keyid: kid_edge,
             key_gathers: Box::from([KeyGather::Var(4)]),
             val_gathers: Box::from([

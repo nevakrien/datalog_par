@@ -293,13 +293,13 @@ impl MagicSet {
             ids.par_iter()
                 .filter_map(|id| {
                     let magic = &self.buckets[id.0].magic;
-                    // println!("[MAGIC] in {magic:?}\n===== {pred:?} {c:?} =====");
+                    println!("[MAGIC] in {:?} (with {pred:?} {c:?})",magic.key);
 
                     // println!("in id {} with {c:?}", id.0);
                     let (k, v) = magic.match_and_project(c)?;
-                    // println!("=====found {id:?} {k:?} {v:?}=======");
+                    println!("=====found {id:?} {k:?} {v:?}=======");
 
-                    println!("found addition with val {v:?}");
+                    // println!("found addition with val {v:?}");
                     Some((*id, (k, v.into())))
                 })
                 .collect(),
@@ -825,4 +825,45 @@ mod tests {
         assert_eq!(search_key2, search_key);
         assert_eq!(found2, found);
     }
+
+    #[test]
+    fn magic_start_bucket_respects_constant_in_atom() {
+        use crate::magic::{MagicKey, MagicSet};
+        use crate::parser::{AtomId, Term32};
+        
+
+        // Build atom: parent(_, bob)
+        let parent = pred_id(1);
+        let bob = const_id(2);
+        let u = Term32::var(0); // anonymous/any var is fine here
+        let atom = AtomId { pred: parent, args: Box::from([u, Term32::from_const(bob)]) };
+
+        let mut ms = MagicSet::new();
+
+        // Register start key with bounds=0 (key = [])
+        let kid = ms.register(MagicKey { atom, bounds: 0 });
+
+        // Seed two parent facts via additions:
+        //   parent(tom,bob) should MATCH the constant guard on arg1
+        //   parent(bob,alice) should NOT
+        let tom = const_id(1);
+        let alice = const_id(3);
+
+        let mut full = ms.empty_new_set();
+        for tup in [[tom, bob], [bob, alice]] {
+            if let Some(new) = ms.additions(parent, &tup) {
+                for (id, (k, v)) in new {
+                    full[id.0].entry(k).or_default().insert(v);
+                }
+            }
+        }
+        ms.put_new_delta(&mut full);
+
+        // Check: only one Δ row in start bucket, with val = [tom]
+        let empty_key: Box<[ConstId]> = Box::from([]);
+        let (_full, delta) = ms[kid].map.get(&empty_key).expect("start bucket exists");
+        assert_eq!(delta.len(), 1, "only parent(tom,bob) should match");
+        assert!(delta.contains(&Box::from([tom])), "value must be [tom]");
+    }
+
 }

@@ -16,7 +16,7 @@ use crate::solve::FullSolver;
 use crate::solve::Gather;
 use crate::solve::KeyGather;
 use crate::solve::QuerySolver;
-use crate::solve::RuleSolver;
+use crate::solve::SingleSolver;
 use crate::solve::SolveEngine;
 use hashbrown::HashMap;
 use std::collections::BTreeMap;
@@ -36,6 +36,8 @@ impl SolvePattern {
     }
 
     pub fn make_solver(self, magic: &mut MagicSet) -> FullSolver {
+        println!("[COMPILE] compiling {self:?}");
+
         //the start is somewhat obvious so we do it here
         let mut atom = self.conds[0].clone();
         atom.canonize();
@@ -174,7 +176,7 @@ impl SolvePattern {
             let keyid = magic.register(MagicKey { atom, bounds });
 
             let exists_only = val_gathers.iter().all(|x| !matches!(x, Gather::Found(_)));
-            parts.push(RuleSolver {
+            parts.push(SingleSolver {
                 key_gathers: key_gathers,
                 val_gathers: val_gathers.into(),
                 exists_only,
@@ -182,8 +184,6 @@ impl SolvePattern {
             });
 
             println!("[COMPILE] solver {:?}", parts.last().unwrap());
-
-            // todo!()
         }
         let end_gather = if !need_end_gather {
             None
@@ -267,6 +267,8 @@ impl QueryRules {
             .collect();
 
         let mut full = magic.empty_new_set();
+
+        println!("[COMPILE] inserting facts");
         for (pred, cons) in &self.facts {
             let Some(new) = magic.additions(*pred, &*cons) else {
                 continue;
@@ -420,11 +422,12 @@ mod test {
 
         let (kb, q_enc) = build_kb_and_query(src);
 
-        let mut qs = full_compile(&kb, q_enc);
-        let results = qs.get_all();
-
         let cid = |name: &str| kb.interner().get_const_if_known(&name.into()).unwrap();
         let bob = cid("bob");
+        println!("bobs id is {bob:?}");
+
+        let mut qs = full_compile(&kb, q_enc);
+        let results = qs.get_all();
 
         let want: HashSet<Box<[ConstId]>> = [Box::from([bob])].into_iter().collect();
         let got: HashSet<Box<[ConstId]>> = results.into_iter().collect();
@@ -449,15 +452,15 @@ mod test {
         "#;
 
         let (kb, q_enc) = build_kb_and_query(src);
+        let cid = |name: &str| kb.interner().get_const_if_known(&name.into()).unwrap();
+        let bob = cid("bob");
+        println!("bobs id is {bob:?}");
 
         // Compile & run
         let mut qs = full_compile(&kb, q_enc);
         let results = qs.get_all();
 
         // Expect exactly one row: [bob]
-        let cid = |name: &str| kb.interner().get_const_if_known(&name.into()).unwrap();
-        let bob = cid("bob");
-
         let want: HashSet<Box<[ConstId]>> =
             [Box::from([bob])].into_iter().collect();
         let got: HashSet<Box<[ConstId]>> = results.into_iter().collect();

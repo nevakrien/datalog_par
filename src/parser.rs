@@ -216,7 +216,9 @@ impl<'a> DatalogParser<'a> {
     fn parse_term(&mut self) -> Result<Term, ParseError> {
         match self.current_token() {
             Some(token) => {
-                let term = if token.chars().next().unwrap().is_uppercase() {
+                let first = token.chars().next().unwrap();
+                let is_var = first == '_' || first.is_uppercase();
+                let term = if is_var {
                     Term::Variable(token.into())
                 } else {
                     Term::Constant(token.into())
@@ -227,6 +229,7 @@ impl<'a> DatalogParser<'a> {
             None => Err(ParseError::UnexpectedEof),
         }
     }
+
 
     fn parse_atom(&mut self) -> Result<Atom, ParseError> {
         // Read functor / atom name
@@ -368,6 +371,103 @@ impl<'a> DatalogParser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    
+    #[test]
+    fn iso_underscore_is_variable_in_body() {
+        let mut p = DatalogParser::new("ok :- parent(_, bob).");
+        let v = p.parse_all().unwrap();
+        match &v[0] {
+            Statement::Rule(r) => {
+                assert_eq!(r.body[0].predicate.as_ref(), "parent");
+                match &r.body[0].args[0] {
+                    Term::Variable(name) => assert_eq!(name.as_ref(), "_"),
+                    other => panic!("first arg should be Variable(\"_\"), got {:?}", other),
+                }
+                match &r.body[0].args[1] {
+                    Term::Constant(name) => assert_eq!(name.as_ref(), "bob"),
+                    other => panic!("second arg should be Constant(\"bob\"), got {:?}", other),
+                }
+            }
+            _ => panic!("expected rule"),
+        }
+    }
+
+    #[test]
+    fn iso_named_underscore_is_variable() {
+        let mut p = DatalogParser::new("ok :- parent(_Kid, bob).");
+        let v = p.parse_all().unwrap();
+        match &v[0] {
+            Statement::Rule(r) => {
+                match &r.body[0].args[0] {
+                    Term::Variable(name) => assert_eq!(name.as_ref(), "_Kid"),
+                    other => panic!("expected Variable(\"_Kid\"), got {:?}", other),
+                }
+            }
+            _ => panic!("expected rule"),
+        }
+    }
+
+    #[test]
+    fn iso_multiple_underscores_are_variables() {
+        let mut p = DatalogParser::new("p(_, _).");
+        let v = p.parse_all().unwrap();
+        match &v[0] {
+            Statement::Fact(a) => {
+                for i in 0..2 {
+                    match &a.args[i] {
+                        Term::Variable(name) => assert_eq!(name.as_ref(), "_"),
+                        other => panic!("arg {} should be Variable(\"_\"), got {:?}", i, other),
+                    }
+                }
+            }
+            _ => panic!("expected fact"),
+        }
+    }
+
+    #[test]
+    fn iso_query_with_underscore_variable() {
+        let mut p = DatalogParser::new("?- parent(_, Who).");
+        let v = p.parse_all().unwrap();
+        match &v[0] {
+            Statement::Query(a) => {
+                match &a.args[0] {
+                    Term::Variable(name) => assert_eq!(name.as_ref(), "_"),
+                    other => panic!("first arg should be Variable(\"_\"), got {:?}", other),
+                }
+                match &a.args[1] {
+                    Term::Variable(name) => assert_eq!(name.as_ref(), "Who"),
+                    other => panic!("second arg should be Variable(\"Who\"), got {:?}", other),
+                }
+            }
+            _ => panic!("expected query"),
+        }
+    }
+
+    #[test]
+    fn iso_underscore_digits_and_names_are_variables() {
+        let mut p = DatalogParser::new("t(_1, _Tmp, X).");
+        let v = p.parse_all().unwrap();
+        match &v[0] {
+            Statement::Fact(a) => {
+                // _1
+                match &a.args[0] {
+                    Term::Variable(name) => assert_eq!(name.as_ref(), "_1"),
+                    other => panic!("_1 should be Variable, got {:?}", other),
+                }
+                // _Tmp
+                match &a.args[1] {
+                    Term::Variable(name) => assert_eq!(name.as_ref(), "_Tmp"),
+                    other => panic!("_Tmp should be Variable, got {:?}", other),
+                }
+                // X
+                match &a.args[2] {
+                    Term::Variable(name) => assert_eq!(name.as_ref(), "X"),
+                    other => panic!("X should be Variable, got {:?}", other),
+                }
+            }
+            _ => panic!("expected fact"),
+        }
+    }
 
     #[test]
     fn iso_nullary_head_and_nullaries_in_body() {
