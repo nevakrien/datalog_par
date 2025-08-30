@@ -237,7 +237,8 @@ impl<'a> DatalogParser<'a> {
                 let first = token.chars().next().unwrap_or('\0');
                 if first.is_uppercase() {
                     return Err(ParseError::InvalidSyntax(
-                        format!("Predicate/atom must start with lowercase (ISO): got '{token}'").into(),
+                        format!("Predicate/atom must start with lowercase (ISO): got '{token}'")
+                            .into(),
                     ));
                 }
                 let pred: Box<str> = token.into();
@@ -254,7 +255,7 @@ impl<'a> DatalogParser<'a> {
                 return Ok(Atom {
                     predicate,
                     args: Vec::new(),
-                })
+                });
             }
         }
 
@@ -291,7 +292,6 @@ impl<'a> DatalogParser<'a> {
 
         Ok(Atom { predicate, args })
     }
-
 
     pub fn parse_statement(&mut self) -> Result<Option<Statement>, ParseError> {
         if self.current_token().is_none() {
@@ -442,8 +442,6 @@ mod tests {
         }
     }
 
-
-
     #[test]
     fn test_parse_with_percent_and_slash_comments() {
         let src = r#"
@@ -592,9 +590,9 @@ pub struct PredId(pub(crate) NonZeroU32);
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
 pub struct ConstId(pub(crate) NonZeroU32);
 
-impl PredId{
-    pub const fn sentinal()->Self{
-        unsafe {Self(NonZeroU32::new_unchecked(u32::MAX))}
+impl PredId {
+    pub const fn sentinal() -> Self {
+        unsafe { Self(NonZeroU32::new_unchecked(u32::MAX)) }
     }
 }
 

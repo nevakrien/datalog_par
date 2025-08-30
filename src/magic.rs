@@ -49,7 +49,7 @@ impl MagicKey {
 #[derive(Debug)]
 pub struct CompiledMagic {
     key: MagicKey,
-    skip: u64, //whether or not to skip a value
+    skip: u64,                    //whether or not to skip a value
     var_dup_lookup: Box<[usize]>, //var -> first occurance
 }
 
@@ -72,10 +72,10 @@ impl CompiledMagic {
         let var_dup_lookup: Box<[usize]> = var_dup_lookup.into();
 
         let mut skip = 0u64;
-        for (pos, arg) in key.atom.args.iter().enumerate(){
+        for (pos, arg) in key.atom.args.iter().enumerate() {
             //check if we are in the 1 case we dont skip
-            if let TermId::Var(v) = arg.term(){
-                if var_dup_lookup[v as usize]==pos{
+            if let TermId::Var(v) = arg.term() {
+                if var_dup_lookup[v as usize] == pos {
                     continue;
                 }
             }
@@ -91,27 +91,29 @@ impl CompiledMagic {
     }
 
     //takes a an entry to this magic table and returns the actual args
-    pub fn move_to_full(&self,search_key:&[ConstId],found:&[ConstId],)->Vec<ConstId>{
+    pub fn move_to_full(&self, search_key: &[ConstId], found: &[ConstId]) -> Vec<ConstId> {
         let arity = self.key.atom.args.len();
         let mut ans = Vec::with_capacity(arity);
         let mut vars = Vec::with_capacity(arity);
         let mut found = found.iter();
         let mut search_key = search_key.iter();
 
-        for (pos,arg) in self.key.atom.args.iter().enumerate(){
+        for (pos, arg) in self.key.atom.args.iter().enumerate() {
             match arg.term() {
-                TermId::Const(c) =>{ans.push(c);},
+                TermId::Const(c) => {
+                    ans.push(c);
+                }
                 TermId::Var(id) => {
                     if id as usize >= vars.len() {
-                        if (self.key.bounds >> pos) & 1 == 1{
+                        if (self.key.bounds >> pos) & 1 == 1 {
                             vars.push(search_key.next().unwrap())
-                        }else{
+                        } else {
                             vars.push(found.next().unwrap())
                         }
                     }
 
                     ans.push(*vars[id as usize])
-                },
+                }
             }
         }
         ans
@@ -161,8 +163,8 @@ impl CompiledMagic {
 
         // projection by bounds (pos order)
         for pos in 0..arity {
-            if (self.skip >> pos) & 1 == 1{
-                continue
+            if (self.skip >> pos) & 1 == 1 {
+                continue;
             }
 
             if (self.key.bounds >> pos) & 1 == 1 {
@@ -188,7 +190,7 @@ pub struct KeyId(pub usize);
 
 #[derive(Debug)]
 pub struct MagicSet {
-    pub(crate)buckets: Vec<Bucket>,                 // index by KeyId.0
+    pub(crate) buckets: Vec<Bucket>,      // index by KeyId.0
     by_pred: HashMap<PredId, Vec<KeyId>>, // pred -> registered KeyIds
     generic: HashMap<PredId, KeyId>,      // (pred, arity) -> generic KeyId (bounds=0)
     existing: HashMap<MagicKey, KeyId>,
@@ -279,7 +281,6 @@ impl MagicSet {
         pred: PredId,
         c: &[ConstId],
     ) -> Option<Vec<(KeyId, (InnerKey, Box<[ConstId]>))>> {
-
         // println!("[MAGIC] checking additions of {pred:?} {c:?}");
         let entry = self.generic_bucket(pred);
 
@@ -293,7 +294,6 @@ impl MagicSet {
                 .filter_map(|id| {
                     let magic = &self.buckets[id.0].magic;
                     // println!("[MAGIC] in {magic:?}\n===== {pred:?} {c:?} =====");
-
 
                     // println!("in id {} with {c:?}", id.0);
                     let (k, v) = magic.match_and_project(c)?;
@@ -754,7 +754,7 @@ mod tests {
 
         let y = const_id(5);
         let (key, value) = cm.match_and_project(&[c1, y, c2]).expect("should match");
-        assert_eq!(key, vec![ y].into());
+        assert_eq!(key, vec![y].into());
         assert!(
             value.is_empty(),
             "projected (right) must be empty when all positions are bound"
@@ -825,5 +825,4 @@ mod tests {
         assert_eq!(search_key2, search_key);
         assert_eq!(found2, found);
     }
-
 }

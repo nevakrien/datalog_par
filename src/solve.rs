@@ -5,8 +5,6 @@
  * and all of those functions would be very similar with very littele benifit to switch
  * most of this runs in the same sort of loop so it should get branch predicted fairly quickly
  **/
-use std::borrow::Cow;
-use std::collections::VecDeque;
 use crate::magic::KeyId;
 use crate::magic::MagicSet;
 use crate::parser::ConstId;
@@ -16,6 +14,8 @@ use hashbrown::HashSet;
 use rayon::iter::Either;
 use rayon::iter::Empty;
 use rayon::prelude::*;
+use std::borrow::Cow;
+use std::collections::VecDeque;
 use std::hash::Hash;
 
 pub type QueryElem = [ConstId];
@@ -35,10 +35,10 @@ pub enum KeyGather {
 
 #[derive(Debug)]
 pub struct RuleSolver {
-    pub(crate)keyid: KeyId,
-    pub(crate)key_gathers: Box<[KeyGather]>,
-    pub(crate)val_gathers: Box<[Gather]>,
-    pub(crate)exists_only: bool, //whether to stop on the first instance or no
+    pub(crate) keyid: KeyId,
+    pub(crate) key_gathers: Box<[KeyGather]>,
+    pub(crate) val_gathers: Box<[Gather]>,
+    pub(crate) exists_only: bool, //whether to stop on the first instance or no
 }
 
 impl RuleSolver {
@@ -150,9 +150,9 @@ pub fn combine_maps<T: Hash + Eq, V>(mut a: HashMap<T, V>, mut b: HashMap<T, V>)
 
 #[derive(Debug)]
 pub struct FullSolver {
-    pub(crate)start: KeyId,
-    pub(crate)parts: Box<[RuleSolver]>,
-    pub(crate)end_gather:Option<Box<[KeyGather]>>
+    pub(crate) start: KeyId,
+    pub(crate) parts: Box<[RuleSolver]>,
+    pub(crate) end_gather: Option<Box<[KeyGather]>>,
 }
 
 impl FullSolver {
@@ -162,7 +162,7 @@ impl FullSolver {
         };
         // println!("[SOLVER] start set is {start:?}");
 
-        let ans = if !self.parts.is_empty(){
+        let ans = if !self.parts.is_empty() {
             //we wana run on all cases except base base base ... base
             let (base, delta) = rayon::join(
                 || self._apply(&start.0, magic, false, 0),
@@ -171,24 +171,26 @@ impl FullSolver {
 
             //merge the results
             Cow::Owned(combine_sets(base, delta))
-        }else{
+        } else {
             Cow::Borrowed(&start.1)
         };
 
         if let Some(g) = &self.end_gather {
-            return ans.par_iter().map(|v|{
-                // println!("[SOLVER] gathering answer for {v:?}");
+            return ans
+                .par_iter()
+                .map(|v| {
+                    // println!("[SOLVER] gathering answer for {v:?}");
 
-                g
-                .iter()
-                .map(|g| match g {
-                    KeyGather::Var(u) => v[*u as usize],
-                    KeyGather::Const(c) => *c,
+                    g.iter()
+                        .map(|g| match g {
+                            KeyGather::Var(u) => v[*u as usize],
+                            KeyGather::Const(c) => *c,
+                        })
+                        .collect()
                 })
-                .collect()
-            }).collect();
-        }else{
-            return ans.into_owned()
+                .collect();
+        } else {
+            return ans.into_owned();
         }
     }
 
@@ -258,15 +260,14 @@ impl SolveEngine {
                         if y.len() > x.len() {
                             std::mem::swap(x, &mut y);
                         }
-                        for (k,mut v) in y.drain(){
+                        for (k, mut v) in y.drain() {
                             let spot = x.entry(k).or_default();
                             if v.len() > spot.len() {
-                                std::mem::swap(&mut v,spot);
+                                std::mem::swap(&mut v, spot);
                             }
                             spot.extend(v);
                         }
                         // println!("[SOLVER] after merge {x:?}");
-
                     });
                 x
             });
@@ -282,43 +283,46 @@ impl SolveEngine {
 }
 
 #[derive(Debug)]
-pub struct QuerySolver{
-    pub engine:SolveEngine,
-    pub magic:MagicSet,
-    pub target:KeyId
+pub struct QuerySolver {
+    pub engine: SolveEngine,
+    pub magic: MagicSet,
+    pub target: KeyId,
 }
 
 impl QuerySolver {
-    pub fn current(&self)->&HashSet<Box<QueryElem>>{
+    pub fn current(&self) -> &HashSet<Box<QueryElem>> {
         // println!("magic {:?}",self.magic[self.target]);
         &self.magic[self.target].map.get(&[][..]).unwrap().1
     }
 
     #[inline]
-    pub fn current_full(&self)->impl Iterator<Item=Box<[ConstId]>>{
+    pub fn current_full(&self) -> impl Iterator<Item = Box<[ConstId]>> {
         self.current().iter().map(|x| self.move_to_full(x))
     }
 
-    pub fn solve_round(&mut self) -> Option<&HashSet<Box<QueryElem>>>{
-        if self.engine.solve_round(&mut self.magic){
-            return None
+    pub fn solve_round(&mut self) -> Option<&HashSet<Box<QueryElem>>> {
+        if self.engine.solve_round(&mut self.magic) {
+            return None;
         }
 
         Some(self.current())
     }
 
     #[inline]
-    pub fn move_to_full(&self,found:&QueryElem)->Box<[ConstId]>{
-        self.magic[self.target].magic.move_to_full(&[],found).into()
+    pub fn move_to_full(&self, found: &QueryElem) -> Box<[ConstId]> {
+        self.magic[self.target]
+            .magic
+            .move_to_full(&[], found)
+            .into()
     }
 
     #[inline]
-    pub fn map_stop<F:FnMut(Box<[ConstId]>)->bool>(mut self,mut f:F) -> bool{
+    pub fn map_stop<F: FnMut(Box<[ConstId]>) -> bool>(mut self, mut f: F) -> bool {
         if self.current_full().any(&mut f) {
             return true;
         }
 
-        while !self.engine.solve_round(&mut self.magic){
+        while !self.engine.solve_round(&mut self.magic) {
             if self.current_full().any(&mut f) {
                 return true;
             }
@@ -327,27 +331,7 @@ impl QuerySolver {
         false
     }
 
-    #[inline(always)]
-    fn _print_n(self,mut n:usize){
-        self.map_stop(|x| {
-            if n == 0 {
-                return true
-            }
-            println!("{:?}",x);
-            n-=1;
-            false
-        });
-    }
-
-    pub fn print_n(self,n:usize){
-        self._print_n(n)
-    }
-
-    pub fn print_all( self){
-        self._print_n(usize::MAX)
-    }
-
-    pub fn get_all(&mut self) -> Vec<Box<QueryElem>>{
+    pub fn get_all(&mut self) -> Vec<Box<QueryElem>> {
         let mut ans: Vec<_> = self.current_full().collect();
         while !self.engine.solve_round(&mut self.magic) {
             ans.extend(self.current().iter().map(|x| self.move_to_full(x)))
@@ -364,15 +348,14 @@ impl QuerySolver {
         let mut buf: VecDeque<Box<QueryElem>> = self.current_full().collect();
 
         std::iter::from_fn(move || {
-            if let Some(ans) = buf.pop_front(){
+            if let Some(ans) = buf.pop_front() {
                 return Some(ans);
             }
-            if self.engine.solve_round(&mut self.magic){
-                return None
+            if self.engine.solve_round(&mut self.magic) {
+                return None;
             }
             buf.extend(self.current_full());
             buf.pop_front()
-
         })
     }
 }
@@ -421,7 +404,7 @@ mod tests {
         let solver_yields_nothing = FullSolver {
             start: kid_generic,
             parts: Box::from([]),
-            end_gather:Some(Box::from([KeyGather::Var(0)]))
+            end_gather: Some(Box::from([KeyGather::Var(0)])),
         };
 
         // Wire it into a SolveEngine; pids can be anything — they won’t be touched
@@ -492,7 +475,7 @@ mod tests {
         let fs = FullSolver {
             start: kid_p,
             parts: Box::from([forward_found]),
-            end_gather:None
+            end_gather: None,
         };
 
         // additions() targets q
@@ -662,7 +645,7 @@ mod tests {
             start: kid_generic,
             // first_key: k_generic.clone(),
             parts: Box::from([part0, part1]),
-            end_gather:None,
+            end_gather: None,
         };
 
         // Round 1: only FULL→FULL→FULL is available → should yield ∅.
@@ -713,12 +696,16 @@ mod tests {
                 .insert(Box::from([const_id(a)]));
 
             let engine = SolveEngine { solvers: vec![] };
-            QuerySolver { engine, magic: ms, target: kid_p }
+            QuerySolver {
+                engine,
+                magic: ms,
+                target: kid_p,
+            }
         };
 
         // two independent solvers from identical fresh state
         let mut qs_iter = make_qs(101);
-        let mut qs_all  = make_qs(101);
+        let mut qs_all = make_qs(101);
 
         // iter yields the seeded Δ once, then stops
         let via_iter: Vec<_> = qs_iter.iter().collect();
@@ -734,6 +721,169 @@ mod tests {
             via_all,
             vec![Box::from([const_id(101)])],
             "get_all should collect seeded Δ"
+        );
+    }
+
+    #[test]
+    fn hand_compiled_path6_pipeline_yields_one_tuple() {
+        // Predicates:
+        //   edge/2  (1)
+        //   seed/1  (2)  -- starting points (Δ)
+        //   path6/6 (3)  -- target relation to populate
+        let edge = pred_id(1);
+        let seed = pred_id(2);
+        let path6 = pred_id(3);
+
+        let mut ms = MagicSet::new();
+
+        // Start from seed/1 generic bucket (key = [])
+        let kid_seed = ms.ensure_generic(seed, 1);
+        // Target path6/6 generic bucket (will receive insertions)
+        let kid_path6 = ms.ensure_generic(path6, 6);
+
+        // edge key: bounds=0b01  (key = [A], values = [B])
+        // One MagicKey is enough for all hops A->B, B->C, ...
+        let kid_edge = ms.register(MagicKey {
+            atom: atom(edge.0.get(), &[TermId::Var(0), TermId::Var(1)]),
+            bounds: 0b01,
+        });
+
+        // Concrete constants for a single chain n1->n2->n3->n4->n5->n6
+        let n1 = const_id(101);
+        let n2 = const_id(102);
+        let n3 = const_id(103);
+        let n4 = const_id(104);
+        let n5 = const_id(105);
+        let n6 = const_id(106);
+
+        let empty_key: Box<[ConstId]> = Box::from([]);
+
+        // Seed Δ: seed/1 has one starting row: [n1]
+        ms[kid_seed]
+            .map
+            .entry(empty_key.clone())
+            .or_insert_with(|| (HashSet::new(), HashSet::new()))
+            .1
+            .insert(Box::from([n1]));
+
+        // Populate edge/2 FULL:
+        //   [n1] -> [n2], [n2] -> [n3], ..., [n5] -> [n6]
+        let mut put_edge = |a: ConstId, b: ConstId| {
+            ms[kid_edge]
+                .map
+                .entry(Box::from([a]))
+                .or_insert_with(|| (HashSet::new(), HashSet::new()))
+                .0
+                .insert(Box::from([b]));
+        };
+        put_edge(n1, n2);
+        put_edge(n2, n3);
+        put_edge(n3, n4);
+        put_edge(n4, n5);
+        put_edge(n5, n6);
+
+        // Build the 5-step pipeline
+        //
+        // After each step k, the "current element" holds the prefix of length k+1:
+        //   step0: [A]           --(edge(A)->B)--> [A,B]
+        //   step1: [A,B]         --(edge(B)->C)--> [A,B,C]
+        //   step2: [A,B,C]       --(edge(C)->D)--> [A,B,C,D]
+        //   step3: [A,B,C,D]     --(edge(D)->E)--> [A,B,C,D,E]
+        //   step4: [A,B,C,D,E]   --(edge(E)->F)--> [A,B,C,D,E,F]
+        //
+        // Each step uses:
+        //   key_gathers: previous last var (A then B then C ... as index)
+        //   val_gathers: Exists(..) for the carried prefix + Found(0) to append the new node
+        let part0 = RuleSolver {
+            keyid: kid_edge,
+            key_gathers: Box::from([KeyGather::Var(0)]),
+            val_gathers: Box::from([Gather::Exists(0), Gather::Found(0)]), // [A,B]
+            exists_only: false,
+        };
+        let part1 = RuleSolver {
+            keyid: kid_edge,
+            key_gathers: Box::from([KeyGather::Var(1)]),
+            val_gathers: Box::from([Gather::Exists(0), Gather::Exists(1), Gather::Found(0)]), // [A,B,C]
+            exists_only: false,
+        };
+        let part2 = RuleSolver {
+            keyid: kid_edge,
+            key_gathers: Box::from([KeyGather::Var(2)]),
+            val_gathers: Box::from([
+                Gather::Exists(0),
+                Gather::Exists(1),
+                Gather::Exists(2),
+                Gather::Found(0),
+            ]), // [A,B,C,D]
+            exists_only: false,
+        };
+        let part3 = RuleSolver {
+            keyid: kid_edge,
+            key_gathers: Box::from([KeyGather::Var(3)]),
+            val_gathers: Box::from([
+                Gather::Exists(0),
+                Gather::Exists(1),
+                Gather::Exists(2),
+                Gather::Exists(3),
+                Gather::Found(0),
+            ]), // [A,B,C,D,E]
+            exists_only: false,
+        };
+        let part4 = RuleSolver {
+            keyid: kid_edge,
+            key_gathers: Box::from([KeyGather::Var(4)]),
+            val_gathers: Box::from([
+                Gather::Exists(0),
+                Gather::Exists(1),
+                Gather::Exists(2),
+                Gather::Exists(3),
+                Gather::Exists(4),
+                Gather::Found(0),
+            ]), // [A,B,C,D,E,F]
+            exists_only: false,
+        };
+
+        // No end_gather: the pipeline already produces 6-tuple rows.
+        let fs = FullSolver {
+            start: kid_seed,
+            parts: Box::from([part0, part1, part2, part3, part4]),
+            end_gather: None,
+        };
+
+        // Push results into path6/6
+        let engine = SolveEngine {
+            solvers: vec![(fs, vec![path6])],
+        };
+
+        // Act: one round should insert exactly one Δ row in path6.
+        let changed = engine.solve_round(&mut ms);
+        assert!(
+            !changed,
+            "solve_round must return false when it performed insertions"
+        );
+
+        // Check Δ(path6) == { [n1,n2,n3,n4,n5,n6] }
+        let (_full, delta) = ms[kid_path6]
+            .map
+            .get(&empty_key)
+            .expect("path6 generic bucket should exist");
+        let expected = Box::from([n1, n2, n3, n4, n5, n6]);
+        assert!(
+            delta.contains(&expected),
+            "expected Δ(path6) to contain the chain; got: {:?}",
+            delta
+        );
+
+        // After rotate, Δ should be empty and FULL should contain the tuple.
+        ms.rotate();
+        let (full_after, delta_after) = ms[kid_path6]
+            .map
+            .get(&empty_key)
+            .expect("path6 generic bucket should exist after rotate");
+        assert!(delta_after.is_empty(), "Δ(path6) must be empty after rotate");
+        assert!(
+            full_after.contains(&expected),
+            "FULL(path6) must contain the chain after rotate"
         );
     }
 
