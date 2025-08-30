@@ -1,6 +1,5 @@
 //!standard https://www.swi-prolog.org/pldoc/man?section=isosyntax
 use std::fmt;
-use std::iter::Peekable;
 use std::str::Chars;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -45,28 +44,83 @@ impl fmt::Display for ParseError {
     }
 }
 
-pub struct DatalogParser<'a> {
-    chars: Peekable<Chars<'a>>,
+/// A simple two-char lookahead without requiring `Clone`.
+#[derive(Debug,Clone)]
+pub struct Lookahead2<I: Iterator<Item = char>> {
+    iter: I,
+    buf0: Option<char>, // next()
+    buf1: Option<char>, // next-after-next
+}
+
+impl<I: Iterator<Item = char>> Lookahead2<I> {
+    pub fn new(iter: I) -> Self {
+        Self { iter, buf0: None, buf1: None }
+    }
+
+    #[inline]
+    fn fill0(&mut self) {
+        if self.buf0.is_none() {
+            self.buf0 = self.iter.next();
+        }
+    }
+    #[inline]
+    fn fill1(&mut self) {
+        self.fill0();
+        if self.buf0.is_some() && self.buf1.is_none() {
+            self.buf1 = self.iter.next();
+        }
+    }
+
+    /// Peek the next character (like Peekable::peek)
+    #[inline]
+    pub fn peek(&mut self) -> Option<char> {
+        self.fill0();
+        self.buf0
+    }
+
+    /// Peek the character after next; fills both lookahead slots as needed.
+    #[inline]
+    pub fn peek2(&mut self) -> Option<char> {
+        self.fill1();
+        self.buf1
+    }
+
+    /// Consume and return the next character.
+    #[inline]
+    pub fn next(&mut self) -> Option<char> {
+        self.fill0();
+        let out = self.buf0.take();
+        if let Some(c1) = self.buf1.take() {
+            // shift second lookahead down to first
+            self.buf0 = Some(c1);
+        }
+        out
+    }
+}
+
+pub struct DatalogParser<I:Iterator<Item = char>> {
+    chars: Lookahead2<I>,
     current_token: Option<String>,
 }
 
-impl<'a> DatalogParser<'a> {
+impl<'a> DatalogParser<Chars<'a>> {
     pub fn new(input: &'a str) -> Self {
         let mut parser = DatalogParser {
-            chars: input.chars().peekable(),
+            chars: Lookahead2::new(input.chars()),
             current_token: None,
         };
         parser.advance_token(); // Initialize with first token
         parser
     }
-
+}
+impl<I:Iterator<Item = char>> DatalogParser<I>{
     fn advance_token(&mut self) {
         self.current_token = self.next_token();
     }
 
     #[inline]
     fn skip_line_comment(&mut self) {
-        while let Some(&ch) = self.chars.peek() {
+        while let Some(ch) = self.chars.peek() {
             if ch == '\n' || ch == '\r' {
                 break;
             }
@@ -90,7 +144,7 @@ impl<'a> DatalogParser<'a> {
     fn skip_ws_and_comments(&mut self) {
         loop {
             // skip whitespace
-            while let Some(&ch) = self.chars.peek() {
+            while let Some(ch) = self.chars.peek() {
                 if ch.is_whitespace() {
                     self.chars.next();
                 } else {
@@ -99,8 +153,7 @@ impl<'a> DatalogParser<'a> {
             }
 
             // check for comments: %, //, /* ... */
-            let mut cloned = self.chars.clone();
-            match cloned.next() {
+            match self.chars.peek() {
                 Some('%') => {
                     // consume '%' and the rest of the line
                     self.chars.next();
@@ -108,7 +161,7 @@ impl<'a> DatalogParser<'a> {
                     continue;
                 }
                 Some('/') => {
-                    match cloned.next() {
+                    match self.chars.peek2() {
                         Some('/') => {
                             // consume both slashes, then rest of line
                             self.chars.next();
@@ -142,7 +195,7 @@ impl<'a> DatalogParser<'a> {
         match first_char {
             '(' | ')' | ',' | '.' => Some(first_char.to_string()),
             ':' => {
-                if self.chars.peek() == Some(&'-') {
+                if self.chars.peek() == Some('-') {
                     self.chars.next(); // consume '-'
                     Some(":-".to_string())
                 } else {
@@ -153,7 +206,7 @@ impl<'a> DatalogParser<'a> {
                 }
             }
             '?' => {
-                if self.chars.peek() == Some(&'-') {
+                if self.chars.peek() == Some('-') {
                     self.chars.next(); // consume '-'
                     Some("?-".to_string())
                 } else {
@@ -171,12 +224,12 @@ impl<'a> DatalogParser<'a> {
     }
 
     fn collect_identifier_chars(&mut self, token: &mut String) -> Option<String> {
-        while let Some(&ch) = self.chars.peek() {
+        while let Some(ch) = self.chars.peek() {
             match ch {
                 ' ' | '\t' | '\n' | '\r' | '(' | ')' | ',' | '.' => break,
                 ':' | '?' => {
                     // Check if this starts a special token (:- or ?-)
-                    if let Some(&next_ch) = self.chars.peek() {
+                    if let Some(next_ch) = self.chars.peek() {
                         if next_ch == '-' {
                             break;
                         }
@@ -371,7 +424,7 @@ impl<'a> DatalogParser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn iso_underscore_is_variable_in_body() {
         let mut p = DatalogParser::new("ok :- parent(_, bob).");
