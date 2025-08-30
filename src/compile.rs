@@ -317,7 +317,214 @@ mod test {
 
         (kb, query_atom.expect("no query found"))
     }
+    //===============FIRST SETS (hard)=====================
 
+// Per-production linked list encoding of the classic LL(1) expr grammar:
+//
+//   E  -> T E'
+//   E' -> + T E' | ε
+//   T  -> F T'
+//   T' -> * F T' | ε
+//   F  -> ( E ) | id
+//
+// We model each production P as a chain of nodes:
+//   start(P,N0). step(P,N0,Sym,N1). step(P,N1,Sym,N2). ... end(P,Nk).
+//
+// Sym is either a terminal (term/1) or a nonterminal (nonterm/1).
+
+const GRAMMAR_LL_LIST: &str = r#"
+    % ---- terminals ----
+    term(plus). term(times). term(lparen). term(rparen). term(id).
+
+    % ---- nonterminals ----
+    nonterm(e). nonterm(e_). nonterm(t). nonterm(t_). nonterm(f).
+
+    % ---- epsilon (nullable nonterminals) ----
+    epsilon(e_). epsilon(t_).
+
+    % ---- productions (linked lists) ----
+    % E -> T E'
+    head(p_e1, e).
+    start(p_e1, p_e1_n0).
+    step(p_e1, p_e1_n0, t,   p_e1_n1).
+    step(p_e1, p_e1_n1, e_,  p_e1_end).
+    end(p_e1,  p_e1_end).
+
+    % E' -> + T E'
+    head(p_e_1, e_).
+    start(p_e_1, p_e_1_n0).
+    step(p_e_1, p_e_1_n0, plus, p_e_1_n1).
+    step(p_e_1, p_e_1_n1, t,    p_e_1_n2).
+    step(p_e_1, p_e_1_n2, e_,   p_e_1_end).
+    end(p_e_1,  p_e_1_end).
+
+    % T -> F T'
+    head(p_t1, t).
+    start(p_t1, p_t1_n0).
+    step(p_t1, p_t1_n0, f,   p_t1_n1).
+    step(p_t1, p_t1_n1, t_,  p_t1_end).
+    end(p_t1,  p_t1_end).
+
+    % T' -> * F T'
+    head(p_t_1, t_).
+    start(p_t_1, p_t_1_n0).
+    step(p_t_1, p_t_1_n0, times, p_t_1_n1).
+    step(p_t_1, p_t_1_n1, f,     p_t_1_n2).
+    step(p_t_1, p_t_1_n2, t_,    p_t_1_end).
+    end(p_t_1,  p_t_1_end).
+
+    % F -> ( E ) | id
+    head(p_f1, f).
+    start(p_f1, p_f1_n0).
+    step(p_f1, p_f1_n0, lparen, p_f1_n1).
+    step(p_f1, p_f1_n1, e,      p_f1_n2).
+    step(p_f1, p_f1_n2, rparen, p_f1_end).
+    end(p_f1,  p_f1_end).
+
+    head(p_f2, f).
+    start(p_f2, p_f2_n0).
+    step(p_f2, p_f2_n0, id,     p_f2_end).
+    end(p_f2,  p_f2_end).
+
+    % ---- nullable prefix within a production (per-production list walk) ----
+    pref_nullable(P, N0) :- start(P, N0).
+    pref_nullable(P, N1) :-
+        pref_nullable(P, N),
+        step(P, N, Y, N1),
+        nonterm(Y),
+        nullable(Y).
+
+    % ---- NULLABLE (ε) ----
+    nullable(X) :- epsilon(X).
+    nullable(X) :- head(P, X), pref_nullable(P, N), end(P, N).
+
+    % ---- FIRST ----
+    % terminal at the first non-nullable position
+    first(X, T) :-
+        head(P, X),
+        pref_nullable(P, N),
+        step(P, N, T, _),
+        term(T).
+
+    % nonterminal at the first non-nullable position
+    first(X, T) :-
+        head(P, X),
+        pref_nullable(P, N),
+        step(P, N, Y, _),
+        nonterm(Y),
+        first(Y, T).
+"#;
+
+#[test]
+fn first_f_is_paren_or_id() {
+    let src = format!(r#"{GRAMMAR_LL_LIST}
+        ?- first(f, T).
+    "#);
+    let (kb, q) = build_kb_and_query(&src);
+    let mut qs = full_compile(&kb, q);
+    let got: HashSet<_> = qs.get_all().into_iter().collect();
+
+    let cid = |s: &str| kb.interner().get_const_if_known(&s.into()).unwrap();
+    let want: HashSet<_> = [
+        Box::from([cid("f"), cid("lparen")]),
+        Box::from([cid("f"), cid("id")]),
+    ]
+    .into_iter()
+    .collect();
+
+    assert_eq!(got, want, "FIRST(F) should be {{ lparen, id }}");
+}
+
+#[test]
+fn first_e_is_paren_or_id() {
+    let src = format!(r#"{GRAMMAR_LL_LIST}
+        ?- first(e, T).
+    "#);
+    let (kb, q) = build_kb_and_query(&src);
+    let mut qs = full_compile(&kb, q);
+    let got: HashSet<_> = qs.get_all().into_iter().collect();
+
+    let cid = |s: &str| kb.interner().get_const_if_known(&s.into()).unwrap();
+    let want: HashSet<_> = [
+        Box::from([cid("e"), cid("lparen")]),
+        Box::from([cid("e"), cid("id")]),
+    ]
+    .into_iter()
+    .collect();
+
+    assert_eq!(got, want, "FIRST(E) should be {{ lparen, id }}");
+}
+
+#[test]
+fn first_e_prime_is_plus_and_nullable_e_prime_true() {
+    // FIRST(E') = { plus }
+    let src = format!(r#"{GRAMMAR_LL_LIST}
+        ?- first(e_, T).
+    "#);
+    let (kb, q) = build_kb_and_query(&src);
+    let mut qs = full_compile(&kb, q);
+    let got_first: HashSet<_> = qs.get_all().into_iter().collect();
+
+    let cid = |s: &str| kb.interner().get_const_if_known(&s.into()).unwrap();
+    let want_first: HashSet<_> =
+        [Box::from([cid("e_"), cid("plus")])].into_iter().collect();
+    assert_eq!(got_first, want_first, "FIRST(E') should be {{ plus }}");
+
+    // NULLABLE(E') is true (ε-production). With a fully bound query, expect 0-tuple row.
+    let src2 = format!(r#"{GRAMMAR_LL_LIST}
+        ?- nullable(e_).
+    "#);
+    let (kb2, q2) = build_kb_and_query(&src2);
+    let mut qs2 = full_compile(&kb2, q2);
+    let got_nullable: HashSet<_> = qs2.get_all().into_iter().collect();
+    let want_nullable: HashSet<_> = [Box::<[ConstId]>::from([cid("e_")])].into_iter().collect();
+
+    assert_eq!(got_nullable, want_nullable, "E' should be nullable");
+}
+
+#[test]
+fn first_t_prime_is_times_and_nullable_t_prime_true() {
+    // FIRST(T') = { times }
+    let src = format!(r#"{GRAMMAR_LL_LIST}
+        ?- first(t_, T).
+    "#);
+    let (kb, q) = build_kb_and_query(&src);
+    let mut qs = full_compile(&kb, q);
+    let got: HashSet<_> = qs.get_all().into_iter().collect();
+
+    let cid = |s: &str| kb.interner().get_const_if_known(&s.into()).unwrap();
+    let want: HashSet<_> =
+        [Box::from([cid("t_"), cid("times")])].into_iter().collect();
+    assert_eq!(got, want, "FIRST(T') should be {{ times }}");
+
+    // NULLABLE(T') is true via epsilon.
+    let src2 = format!(r#"{GRAMMAR_LL_LIST}
+        ?- nullable(t_).
+    "#);
+    let (kb2, q2) = build_kb_and_query(&src2);
+    let mut qs2 = full_compile(&kb2, q2);
+    let got2: HashSet<_> = qs2.get_all().into_iter().collect();
+    let want2: HashSet<_> = [Box::<[ConstId]>::from([cid("t_")])].into_iter().collect();
+    assert_eq!(got2, want2, "T' should be nullable");
+}
+
+#[test]
+fn no_cross_mixing_between_different_productions() {
+    // Sanity: you cannot walk from F’s chain into T’s chain by accident.
+    // This is a BOOLEAN failure: expect no rows.
+    let src = format!(r#"{GRAMMAR_LL_LIST}
+        % ask if there exists an F-production whose nullable prefix exactly reaches the end
+        % of a T production node — should fail.
+        bad :- head(Pf, f), pref_nullable(Pf, N), end(pt1, N).  % pt1 never defined
+        ?- bad.
+    "#);
+    let (kb, q) = build_kb_and_query(&src);
+    let mut qs = full_compile(&kb, q);
+    let got: Vec<_> = qs.get_all(); // boolean
+    assert!(got.is_empty(), "different productions must not mix nodes");
+}
+
+    //=====REGULAR
     #[test]
     fn two_step_ancestor_rule() {
         // Ancestor(X,Z) :- parent(X,Y), parent(Y,Z).
