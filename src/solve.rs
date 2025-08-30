@@ -162,14 +162,14 @@ impl FullSolver {
 
         let ans = if !self.parts.is_empty() {
             //we wana run on all cases except base base base ... base
-            // let (base, delta) = rayon::join(
-            //     || self._apply(&start.0, magic, false, 0),
-            //     || self._apply(&start.1, magic, true, 0),
-            // );
-            let (base, delta) = (
-                self._apply(&start.0, magic, false, 0),
-                self._apply(&start.1, magic, true, 0),
+            let (base, delta) = rayon::join(
+                || self._apply(&start.0, magic, false, 0),
+                || self._apply(&start.1, magic, true, 0),
             );
+            // let (base, delta) = (
+            //     self._apply(&start.0, magic, false, 0),
+            //     self._apply(&start.1, magic, true, 0),
+            // );
 
 
             //merge the results
@@ -210,14 +210,14 @@ impl FullSolver {
             combine_sets(base, delta)
         } else {
             let (base, delta) = self.parts[i].apply(elems, magic, true);
-            // let (base, delta) = rayon::join(
-            //     || self._apply(&base, magic, used_delta, i + 1),
-            //     || self._apply(&delta, magic, true, i + 1),
-            // );
-            let (base, delta) = (
-                self._apply(&base, magic, used_delta, i + 1),
-                self._apply(&delta, magic, true, i + 1),
+            let (base, delta) = rayon::join(
+                || self._apply(&base, magic, used_delta, i + 1),
+                || self._apply(&delta, magic, true, i + 1),
             );
+            // let (base, delta) = (
+            //     self._apply(&base, magic, used_delta, i + 1),
+            //     self._apply(&delta, magic, true, i + 1),
+            // );
 
             combine_sets(base, delta)
         }
