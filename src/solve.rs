@@ -18,6 +18,7 @@ use rayon::prelude::*;
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::hash::Hash;
+use crossbeam_channel::{Receiver,Sender,unbounded};
 
 pub type QueryElem = [ConstId];
 
@@ -237,46 +238,61 @@ impl SolveEngine {
         let magic = &*magic_mut;
 
         //make additon sets
-        use crossbeam_channel::unbounded;
-
         let (s,r) = unbounded();
         let mut new_set = magic.empty_new_set();
 
-        rayon::join(
-            move || { self
-                .solvers
-                .par_iter()
-                //1. actually run each solver
-                .flat_map(|(s, pids)| {
-                    s.apply(magic).into_par_iter().flat_map(|x| {
-                        pids.par_iter()
-                            .filter_map(move |pred| {
-                                //actual op
-                                magic.additions(*pred, &x)
-                            })
-                            .flatten()
-                    })
-                }).for_each(|x|{
-                    s.send(x).unwrap();
-                });
-                drop(s)
-                // .collect::<Vec<_>>()
-                // .into_iter()
-                // .fold(
-                //     magic.empty_new_set(),
-                //     |mut m, (id, (k, v))| {
-                //         // println!("[SOLVER] merging {k:?}{v:?}");
-                //         m[id.0].entry(k).or_default().insert(v);
-                //         m
-                //     },
-                // );
-            },
+        // rayon::join(
+        //     move || { self
+        //         .solvers
+        //         .par_iter()
+        //         //1. actually run each solver
+        //         .flat_map(|(s, pids)| {
+        //             s.apply(magic).into_par_iter().flat_map(|x| {
+        //                 pids.par_iter()
+        //                     .filter_map(move |pred| {
+        //                         //actual op
+        //                         magic.additions(*pred, &x)
+        //                     })
+        //                     .flatten()
+        //             })
+        //         }).for_each(|x|{
+        //             s.send(x).unwrap();
+        //         });
+        //         drop(s)
+        //     },
 
-            || r.iter().for_each(|(id, (k, v))| {
-                        // println!("[SOLVER] merging {k:?}{v:?}");
-                        new_set[id.0].entry(k).or_default().insert(v);
-                    })
-            );
+        //     || r.iter().for_each(|(id, (k, v))| {
+        //                 // println!("[SOLVER] merging {k:?}{v:?}");
+        //                 new_set[id.0].entry(k).or_default().insert(v);
+        //             })
+        //     );
+        rayon::join(
+            move || {
+                self.solvers
+                    .par_iter()
+                    .for_each(|(sov, pids)| {
+                        sov.apply(magic)
+                            .into_par_iter()
+                            .for_each(|x| {
+                                for &pred in pids {
+                                    if let Some(iter) = magic.additions(pred, &x) {
+                                        for item in iter {
+                                            // item: (PredId, (InnerKey, Projected))
+                                            s.send(item).unwrap();
+                                        }
+                                    }
+                                }
+                            });
+                    });
+                drop(s);
+            },
+            || {
+                r.iter().for_each(|(id, (k, v))| {
+                    new_set[id.0].entry(k).or_default().insert(v);
+                })
+            },
+        );
+
 
         // 4 put it in
         magic_mut.rotate();
