@@ -17,3 +17,5 @@ ancestor(X, Z) :- parent(X, Y), ancestor(Y, Z).
 ?- ancestor(bob, X).
 ?- ancestor(X, Y).
 ?- ancestor(alice, alice).
+?- parent(charlie, X).
+?- ancestor(X, X).
