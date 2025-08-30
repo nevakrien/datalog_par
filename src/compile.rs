@@ -52,30 +52,10 @@ impl SolvePattern {
             var_map.entry(v).or_insert(pos);
         }
 
-
-        //special case for specifically a fetch quest
-        if self.conds.len() == 1 {
-            let gather = self
-                .head
-                .iter()
-                .map(|x| match x.term() {
-                    TermId::Const(c) => KeyGather::Const(c),
-                    TermId::Var(v) => KeyGather::Var(var_map[&v] as u32),
-                })
-                .collect();
-
-            println!("[COMPILE] only gather: {gather:?}");
-            return FullSolver {
-                start,
-                parts: Box::from([]),
-                end_gather: Some(gather),
-            };
-        }
-
         //main loop is very tricky
         let mut parts = Vec::new();
         
-        let need_end_gather = !self.head.iter().all(|x| x.is_var());
+        let need_end_gather = self.conds.len() == 1 || !self.head.iter().all(|x| x.is_var());
 
         for (i, a) in self.conds[1..].iter().enumerate() {
             let i = i + 1; //adjust proper
