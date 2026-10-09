@@ -18,7 +18,7 @@ use rayon::prelude::*;
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::hash::Hash;
-use crossbeam_channel::{Receiver,Sender,unbounded};
+use crossbeam_channel::unbounded;
 
 pub type QueryElem = [ConstId];
 
@@ -50,11 +50,35 @@ impl SingleSolver {
         magic: &MagicSet,
         do_base: bool,
     ) -> (HashSet<Box<QueryElem>>, HashSet<Box<QueryElem>>) {
+        self.matches(elems, magic, do_base).partition_map(|x| x)
+    }
+
+    // Once a delta has been used, provenance no longer matters. Collect old
+    // and delta matches together without constructing a union of the inputs.
+    fn apply_combined(
+        &self,
+        elems: &HashSet<Box<QueryElem>>,
+        magic: &MagicSet,
+        do_base: bool,
+    ) -> HashSet<Box<QueryElem>> {
+        self.matches(elems, magic, do_base)
+            .map(|x| match x {
+                Either::Left(v) | Either::Right(v) => v,
+            })
+            .collect()
+    }
+
+    fn matches<'a>(
+        &'a self,
+        elems: &'a HashSet<Box<QueryElem>>,
+        magic: &'a MagicSet,
+        do_base: bool,
+    ) -> impl ParallelIterator<Item = Either<Box<QueryElem>, Box<QueryElem>>> + 'a {
         elems
             .par_iter()
             .map_init(
                 || Vec::with_capacity(self.key_gathers.len()),
-                |key, elem| {
+                move |key, elem| {
                     let elem = &**elem;
                     key.clear();
 
@@ -84,7 +108,6 @@ impl SingleSolver {
                 },
             )
             .flatten()
-            .partition_map(|x| x)
     }
 
     fn run_on(
@@ -167,12 +190,6 @@ impl FullSolver {
                 || self._apply(&start.0, magic, false, 0),
                 || self._apply(&start.1, magic, true, 0),
             );
-            // let (base, delta) = (
-            //     self._apply(&start.0, magic, false, 0),
-            //     self._apply(&start.1, magic, true, 0),
-            // );
-
-
             //merge the results
             Cow::Owned(combine_sets(base, delta))
         } else {
@@ -205,21 +222,32 @@ impl FullSolver {
         used_delta: bool,
         i: usize,
     ) -> HashSet<Box<QueryElem>> {
-        if i == self.parts.len() - 1 {
-            let (base, delta) = self.parts[i].apply(elems, magic, used_delta);
+        if elems.is_empty() {
+            return HashSet::new();
+        }
 
-            combine_sets(base, delta)
+        if used_delta {
+            // All remaining atoms may use either old or delta facts. Keep a
+            // single continuation, deduplicating between joins.
+            let mut found = self.parts[i].apply_combined(elems, magic, true);
+            for part in &self.parts[i + 1..] {
+                if found.is_empty() {
+                    break;
+                }
+                found = part.apply_combined(&found, magic, true);
+            }
+            return found;
+        }
+
+        if i == self.parts.len() - 1 {
+            // No delta yet: the last atom must supply one.
+            self.parts[i].apply_combined(elems, magic, false)
         } else {
             let (base, delta) = self.parts[i].apply(elems, magic, true);
             let (base, delta) = rayon::join(
                 || self._apply(&base, magic, used_delta, i + 1),
                 || self._apply(&delta, magic, true, i + 1),
             );
-            // let (base, delta) = (
-            //     self._apply(&base, magic, used_delta, i + 1),
-            //     self._apply(&delta, magic, true, i + 1),
-            // );
-
             combine_sets(base, delta)
         }
     }
@@ -405,6 +433,50 @@ mod tests {
         AtomId {
             pred: pred_id(pred),
             args: terms.iter().cloned().map(Into::into).collect(),
+        }
+    }
+
+    #[test]
+    fn four_atom_join_matches_naive_join_minus_all_old() {
+        // Distinct values preserve each atom's old/delta choice in the answer.
+        // Exercise every distribution of nonempty deltas, including none.
+        for delta_mask in 0u32..16 {
+            let mut magic = MagicSet::new();
+            let keys: Vec<_> = (1..=4)
+                .map(|p| magic.ensure_generic(pred_id(p), 1))
+                .collect();
+            for (i, &key) in keys.iter().enumerate() {
+                let spot = magic[key].map.entry(Box::from([])).or_default();
+                spot.0.insert(Box::from([const_id(2 * i as u32 + 1)]));
+                if delta_mask & (1 << i) != 0 {
+                    spot.1.insert(Box::from([const_id(2 * i as u32 + 2)]));
+                }
+            }
+            let parts = (1..4)
+                .map(|i| SingleSolver {
+                    keyid: keys[i],
+                    key_gathers: Box::from([]),
+                    val_gathers: (0..i)
+                        .map(|j| Gather::Exists(j as u32))
+                        .chain(std::iter::once(Gather::Found(0)))
+                        .collect(),
+                    exists_only: false,
+                })
+                .collect();
+            let solver = FullSolver {
+                start: keys[0],
+                parts,
+                end_gather: None,
+            };
+            let expected: HashSet<Box<QueryElem>> = (1u32..16)
+                .filter(|choice| choice & !delta_mask == 0)
+                .map(|choice| {
+                    (0..4)
+                        .map(|i| const_id(2 * i + 1 + ((choice >> i) & 1)))
+                        .collect()
+                })
+                .collect();
+            assert_eq!(solver.apply(&magic), expected, "delta mask {delta_mask:04b}");
         }
     }
 
@@ -908,4 +980,46 @@ mod tests {
             "FULL(path6) must contain the chain after rotate"
         );
     }
+}
+
+use std::process;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+// tune as you like
+pub const MAX_THREADS: usize = 200;
+
+// Monotonic counter of how many threads have taken a slot so far.
+static NEXT_SLOT: AtomicUsize = AtomicUsize::new(0);
+
+// Allocates one slot for the calling thread.
+// On overflow, print a message and terminate the process.
+#[inline]
+fn alloc_slot_or_die() -> usize {
+    let i = NEXT_SLOT.fetch_add(1, Ordering::Relaxed);
+    if i < MAX_THREADS {
+        return i;
+    }
+
+    // We arrived here because too many distinct threads have touched the system.
+    // Best-effort message, then tear down the process *immediately*.
+    eprintln!(
+        "[fatal] TLS slot overflow: requested slot {} but MAX_THREADS = {}. \
+         Increase MAX_THREADS or reduce thread churn.",
+        i, MAX_THREADS
+    );
+
+    // Choose one of these termination strategies:
+    // 1) Abort (generates a core dump on many systems; cannot be caught).
+    process::abort();
+}
+
+// Runs once per thread, on first access.
+thread_local! {
+    static THREAD_SLOT: usize = alloc_slot_or_die();
+}
+
+/// Fast path: returns the calling thread’s compact index (0..MAX_THREADS-1).
+#[inline]
+pub fn thread_index() -> usize {
+    THREAD_SLOT.with(|&i| i)
 }
