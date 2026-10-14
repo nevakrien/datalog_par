@@ -118,9 +118,9 @@
 //         None
 //     }
 
-// 	//gets a value or inilizes with f.
-// 	//WARNING!!!: to avoid contention we might inilize the value more than once
-// 	//if this isnt desirble use get_or_once
+// 	//gets a value or initializes with f.
+// 	//WARNING!!!: to avoid contention we might initialize the value more than once
+// 	//if this isn't desirable use get_or_once
 // 	pub fn get_or<'b>(&self, k: &'b K,f:impl FnOnce()->V) ->&V{
 //     	if let Some(ans) = self.try_get(k){
 //     		return ans

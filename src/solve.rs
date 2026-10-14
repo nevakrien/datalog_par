@@ -1,8 +1,8 @@
 /*!
  * this module basically exposes a tiny PL
- * we allow mapings from sets to sets taking into acount 1 magic set entry
+ * we allow mappings from sets to sets taking into account 1 magic set entry
  * we are not using a dyn trait here since that would cause multiple functions to be made
- * and all of those functions would be very similar with very littele benifit to switch
+ * and all of those functions would be very similar with very little benefit to switch
  * most of this runs in the same sort of loop so it should get branch predicted fairly quickly
  **/
 
@@ -185,7 +185,7 @@ impl FullSolver {
         // println!("[SOLVER] start set is {start:?}");
 
         let ans = if !self.parts.is_empty() {
-            //we wana run on all cases except base base base ... base
+            //we want to run on all cases except base base base ... base
             let (base, delta) = rayon::join(
                 || self._apply(&start.0, magic, false, 0),
                 || self._apply(&start.1, magic, true, 0),
@@ -261,7 +261,7 @@ pub struct SolveEngine {
 impl SolveEngine {
     //returns true if there was no meaningful thing to add
     pub fn solve_round(&self, magic: &mut MagicSet) -> bool {
-        //println!("[SOLVE] runing round with {magic:?}", );
+        //println!("[SOLVE] running round with {magic:?}", );
         let magic_mut = magic;
         let magic = &*magic_mut;
 

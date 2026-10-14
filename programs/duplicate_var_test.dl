@@ -1,0 +1,8 @@
+self_pair(a, a).
+self_pair(b, b).
+self_pair(c, d).
+
+sym(X) :- self_pair(X, X).
+
+?- sym(X).
+?- self_pair(X, X).

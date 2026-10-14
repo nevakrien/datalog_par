@@ -1,0 +1,82 @@
+% --- Facts ---
+edge(n00, n41).
+edge(n01, n03).
+edge(n01, n04).
+edge(n02, n03).
+edge(n02, n37).
+edge(n03, n32).
+edge(n04, n26).
+edge(n05, n15).
+edge(n06, n36).
+edge(n08, n03).
+edge(n08, n36).
+edge(n08, n37).
+edge(n09, n37).
+edge(n11, n02).
+edge(n11, n08).
+edge(n11, n18).
+edge(n11, n35).
+edge(n13, n19).
+edge(n13, n36).
+edge(n15, n06).
+edge(n17, n23).
+edge(n18, n03).
+edge(n18, n36).
+edge(n18, n39).
+edge(n19, n13).
+edge(n19, n31).
+edge(n19, n43).
+edge(n21, n29).
+edge(n23, n19).
+edge(n24, n15).
+edge(n24, n49).
+edge(n25, n05).
+edge(n25, n36).
+edge(n26, n21).
+edge(n27, n18).
+edge(n27, n28).
+edge(n27, n46).
+edge(n28, n32).
+edge(n29, n26).
+edge(n30, n26).
+edge(n30, n31).
+edge(n31, n02).
+edge(n31, n04).
+edge(n31, n42).
+edge(n32, n20).
+edge(n32, n21).
+edge(n34, n37).
+edge(n36, n05).
+edge(n36, n17).
+edge(n37, n30).
+edge(n38, n46).
+edge(n39, n44).
+edge(n40, n43).
+edge(n41, n18).
+edge(n41, n28).
+edge(n41, n45).
+edge(n43, n01).
+edge(n43, n22).
+edge(n43, n29).
+edge(n44, n03).
+edge(n44, n13).
+edge(n45, n18).
+edge(n45, n49).
+edge(n46, n25).
+edge(n46, n31).
+edge(n47, n05).
+edge(n47, n10).
+edge(n49, n08).
+edge(n49, n27).
+
+% --- Rules ---
+path(X, Y) :- edge(X, Y).
+path(X, Z) :- edge(X, Y), path(Y, Z).
+
+% --- Queries ---
+?- path(X, Y).
+?- path(n35, n17).
+?- path(n45, n26).
+?- path(n22, n43).
+?- path(n24, n17).
+?- path(n09, n05).

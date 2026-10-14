@@ -1,0 +1,15 @@
+parent(tom, bob).
+parent(tom, mary).
+parent(bob, ann).
+parent(mary, joe).
+
+grandparent(X, Z) :- parent(X, Y), parent(Y, Z).
+greatgrandparent(X, W) :- parent(X, Y), parent(Y, Z), parent(Z, W).
+
+knows(bob, tom).
+
+?- grandparent(tom, Z).
+?- grandparent(X, Z).
+?- greatgrandparent(tom, W).
+?- knows(X, Y).
+?- parent(Y, bob).

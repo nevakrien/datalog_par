@@ -335,7 +335,7 @@ impl MagicSet {
 
     /// Move all delta -> full.
     pub fn rotate(&mut self) {
-        //this blocks everything so we prallalize as much as we can
+        //this blocks everything so we parallelize as much as we can
         self.buckets.par_iter_mut().for_each(|Bucket { map, .. }| {
             map.par_iter_mut().for_each(move |(_k, (full, delta))| {
                 full.extend(delta.drain()); //serial since we have enough (extend would side allocate)

@@ -1,0 +1,12 @@
+parent(tom, bob).
+parent(tom, mary).
+parent(bob, ann).
+
+father(X) :- parent(X, Y).
+father(X) :- parent(X, Z).
+
+parent_of(X) :- parent(X, Y).
+
+?- father(X).
+?- father(tom).
+?- parent_of(X).

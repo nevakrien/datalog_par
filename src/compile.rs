@@ -1,6 +1,6 @@
 /*!
- * note that this module itself does not need to be performent
- * it wont be a major cost from overall runtime
+ * note that this module itself does not need to be performant
+ * it won't be a major cost from overall runtime
 */
 
 use crate::magic::MagicKey;

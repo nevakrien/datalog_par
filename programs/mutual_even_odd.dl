@@ -1,0 +1,11 @@
+step(a, b).
+step(b, c).
+step(c, d).
+step(d, e).
+
+even(X) :- step(a, X).
+even(X) :- odd(Y), step(Y, X).
+odd(X) :- even(Y), step(Y, X).
+
+?- even(X).
+?- odd(X).

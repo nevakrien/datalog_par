@@ -1,0 +1,9 @@
+parent(tom, bob).
+parent(bob, ann).
+
+grandparent(X, Z) :- parent(X, Y), parent(Y, Z).
+
+?- parent(tom, bob).
+?- parent(bob, tom).
+?- grandparent(tom, ann).
+?- grandparent(tom, bob).
